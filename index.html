@@ -1,0 +1,812 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<title>Ventura · Control interno</title>
+<style>
+  :root{
+    --bg: #F7EFEC;
+    --bg-panel: #FDF6F8;
+    --bg-card: #FFFFFF;
+    --hover: #FBEEF2;
+    --line: #EEDCE1;
+    --ink: #3A2530;
+    --muted: #8C6B78;
+    --muted-2: #B49AA5;
+    --rose: #D9577B;
+    --rose-dim: #F8E1E7;
+    --gold: #B87A21;
+    --green: #2F9E6E;
+    --red: #CC4646;
+    --amber: #B8791F;
+    --blue: #3E7EA6;
+    --radius: 10px;
+    --shadow: 0 1px 2px rgba(58,37,48,0.05), 0 1px 8px rgba(58,37,48,0.04);
+    font-variant-numeric: tabular-nums;
+  }
+  *{box-sizing:border-box;}
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    font-size:14px; line-height:1.45;
+  }
+  ::-webkit-scrollbar{width:8px;height:8px;}
+  ::-webkit-scrollbar-thumb{background:var(--line);border-radius:4px;}
+
+  #app{display:flex; min-height:100vh;}
+
+  /* Sidebar */
+  #sidebar{
+    width:216px; flex-shrink:0; background:var(--bg-panel);
+    border-right:1px solid var(--line); padding:22px 14px; display:flex; flex-direction:column;
+  }
+  .brand{display:flex; align-items:baseline; gap:6px; padding:0 8px 22px;}
+  .brand .mark{color:var(--rose); font-size:20px; font-weight:700; letter-spacing:-0.02em;}
+  .brand .sub{color:var(--muted-2); font-size:11px;}
+  nav{display:flex; flex-direction:column; gap:2px;}
+  nav button{
+    all:unset; cursor:pointer; padding:10px 12px; border-radius:var(--radius);
+    color:var(--muted); font-size:13.5px; display:flex; align-items:center; gap:10px;
+  }
+  nav button:hover{background:var(--hover); color:var(--ink);}
+  nav button.active{background:var(--rose-dim); color:var(--ink); font-weight:600;}
+  nav button .dot{width:6px;height:6px;border-radius:50%;background:currentColor;opacity:0.55;flex-shrink:0;}
+  .sidebar-foot{margin-top:auto; padding:10px 8px 0; color:var(--muted-2); font-size:11px; border-top:1px solid var(--line);}
+
+  /* Main */
+  #main{flex:1; min-width:0; padding:26px 34px 60px;}
+  .page-head{display:flex; align-items:flex-end; justify-content:space-between; margin-bottom:20px; gap:16px; flex-wrap:wrap;}
+  .page-head h1{margin:0; font-size:20px; font-weight:700;}
+  .page-head p{margin:4px 0 0; color:var(--muted); font-size:13px;}
+
+  .btn{
+    all:unset; cursor:pointer; padding:9px 16px; border-radius:var(--radius);
+    font-size:13px; font-weight:600; display:inline-flex; align-items:center; gap:6px;
+  }
+  .btn-primary{background:var(--rose); color:#FFF7F9;}
+  .btn-primary:hover{filter:brightness(1.06);}
+  .btn-ghost{background:var(--bg-card); color:var(--ink); border:1px solid var(--line);}
+  .btn-ghost:hover{border-color:var(--muted-2);}
+  .btn-danger{background:transparent; color:var(--red); padding:6px 10px;}
+  .btn-sm{padding:6px 10px; font-size:12px;}
+
+  /* KPI cards */
+  .kpi-grid{display:grid; grid-template-columns:repeat(auto-fit, minmax(180px,1fr)); gap:12px; margin-bottom:22px;}
+  .kpi{background:var(--bg-card); border:1px solid var(--line); border-radius:var(--radius); padding:16px; box-shadow:var(--shadow);}
+  .kpi .label{color:var(--muted); font-size:12px; margin-bottom:8px;}
+  .kpi .value{font-size:22px; font-weight:700;}
+  .kpi .value.pos{color:var(--green);}
+  .kpi .value.neg{color:var(--red);}
+  .kpi .sub{color:var(--muted-2); font-size:11.5px; margin-top:4px;}
+
+  .panel{background:var(--bg-card); border:1px solid var(--line); border-radius:var(--radius); padding:18px; margin-bottom:18px; box-shadow:var(--shadow);}
+  .panel h2{margin:0 0 4px; font-size:14px; font-weight:700;}
+  .panel .hint{color:var(--muted); font-size:12px; margin-bottom:14px;}
+
+  /* Forms */
+  .form-grid{display:grid; grid-template-columns:repeat(auto-fill, minmax(150px,1fr)); gap:10px; margin-bottom:12px;}
+  label{display:block; color:var(--muted); font-size:11.5px; margin-bottom:4px;}
+  input, select{
+    width:100%; background:var(--bg-panel); border:1px solid var(--line); color:var(--ink);
+    border-radius:7px; padding:8px 9px; font-size:13px; font-family:inherit;
+  }
+  input:focus, select:focus{outline:none; border-color:var(--rose);}
+  .field{min-width:0;}
+
+  /* Tables */
+  table{width:100%; border-collapse:collapse; font-size:12.8px;}
+  thead th{
+    text-align:left; color:var(--muted); font-weight:600; font-size:11px;
+    padding:8px 10px; border-bottom:1px solid var(--line); white-space:nowrap;
+  }
+  tbody td{padding:9px 10px; border-bottom:1px solid var(--line); white-space:nowrap;}
+  tbody tr:hover{background:var(--hover);}
+  .table-wrap{overflow-x:auto;}
+  .empty{padding:34px 10px; text-align:center; color:var(--muted-2);}
+
+  .pill{padding:3px 9px; border-radius:20px; font-size:11px; font-weight:600; display:inline-block;}
+  .pill.entregado{background:rgba(47,158,110,0.13); color:var(--green);}
+  .pill.transito{background:rgba(62,126,166,0.14); color:var(--blue);}
+  .pill.confirmado{background:rgba(184,122,33,0.14); color:var(--gold);}
+  .pill.pendiente{background:rgba(140,107,120,0.12); color:var(--muted);}
+  .pill.devuelto, .pill.cancelado{background:rgba(204,70,70,0.13); color:var(--red);}
+
+  .filters{display:flex; gap:10px; flex-wrap:wrap; margin-bottom:14px; align-items:flex-end;}
+  .filters .field{width:150px;}
+
+  .tabs{display:flex; gap:4px; margin-bottom:16px; border-bottom:1px solid var(--line);}
+  .tabs button{
+    all:unset; cursor:pointer; padding:9px 4px; margin-right:18px; color:var(--muted);
+    font-size:13px; font-weight:600; border-bottom:2px solid transparent;
+  }
+  .tabs button.active{color:var(--ink); border-color:var(--rose);}
+
+  .row-actions{display:flex; gap:4px;}
+  .two-col{display:grid; grid-template-columns:1fr 1fr; gap:18px;}
+  @media (max-width:900px){ .two-col{grid-template-columns:1fr;} }
+
+  .note{font-size:12px; color:var(--muted-2); margin-top:8px;}
+  .status-msg{font-size:12px; padding:8px 12px; border-radius:7px; margin-bottom:12px;}
+  .status-msg.ok{background:rgba(47,158,110,0.1); color:var(--green);}
+  .status-msg.err{background:rgba(204,70,70,0.1); color:var(--red);}
+
+  .slider-row{display:flex; align-items:center; gap:10px;}
+  input[type=range]{accent-color:var(--rose);}
+  .bar{height:8px; border-radius:4px; background:var(--bg-panel); overflow:hidden; margin:8px 0;}
+  .bar-fill{height:100%; background:var(--rose);}
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="sidebar">
+    <div class="brand"><span class="mark">Ventura</span><span class="sub">control</span></div>
+    <nav id="nav"></nav>
+    <div class="sidebar-foot">Datos compartidos del equipo<br><a href="#" id="change_url" style="color:var(--muted-2)">Cambiar conexión de datos</a></div>
+  </div>
+  <div id="main"></div>
+</div>
+
+<script>
+/* ---------- storage helpers (Google Sheets vía Apps Script) ---------- */
+const KEYS = { pedidos:'ventura:pedidos', compras:'ventura:compras', egresos:'ventura:egresos' };
+const API_URL_KEY = 'venturaApiUrl';
+function getApiUrl(){ return localStorage.getItem(API_URL_KEY) || ''; }
+function setApiUrl(u){ localStorage.setItem(API_URL_KEY, u.trim()); }
+
+async function loadList(key){
+  try{
+    const url = getApiUrl();
+    if(!url) return [];
+    const res = await fetch(url + '?key=' + encodeURIComponent(key));
+    const data = await res.json();
+    return Array.isArray(data) ? data : [];
+  }catch(e){ return []; }
+}
+async function saveList(key, arr){
+  try{
+    const url = getApiUrl();
+    if(!url) return false;
+    const res = await fetch(url, {
+      method:'POST',
+      headers:{'Content-Type':'text/plain;charset=utf-8'},
+      body: JSON.stringify({ key, value: JSON.stringify(arr) })
+    });
+    const data = await res.json();
+    return !!data.ok;
+  }catch(e){ return false; }
+}
+function uid(){ return Date.now().toString(36) + Math.random().toString(36).slice(2,7); }
+function money(n){
+  n = Number(n)||0;
+  return '$' + n.toLocaleString('es-EC', {minimumFractionDigits:2, maximumFractionDigits:2});
+}
+function pct(n){ return (Number(n)||0).toFixed(1) + '%'; }
+function parseNum(v){ return Number(String(v).replace(/[^0-9.\-]/g,'')) || 0; }
+
+/* ---------- state ---------- */
+let STATE = { pedidos:[], compras:[], egresos:[], tab:'dashboard', loaded:false };
+
+const ESTADOS = ['Pendiente','Confirmado','En tránsito','Entregado','Devuelto','Cancelado'];
+function estadoClass(e){
+  const m = {'Entregado':'entregado','En tránsito':'transito','Confirmado':'confirmado','Pendiente':'pendiente','Devuelto':'devuelto','Cancelado':'cancelado'};
+  return m[e] || 'pendiente';
+}
+
+/* ---------- boot ---------- */
+async function boot(){
+  if(!getApiUrl()){ renderSetup(); return; }
+  const [p,c,e] = await Promise.all([loadList(KEYS.pedidos), loadList(KEYS.compras), loadList(KEYS.egresos)]);
+  STATE.pedidos = p; STATE.compras = c; STATE.egresos = e; STATE.loaded = true;
+  renderNav(); renderMain();
+}
+
+function renderSetup(){
+  document.getElementById('sidebar').style.display = 'none';
+  const main = document.getElementById('main');
+  main.style.maxWidth = '520px'; main.style.margin = '60px auto';
+  main.innerHTML = `
+    <div class="panel">
+      <h2>Conectar los datos compartidos</h2>
+      <p class="hint">Pega aquí la URL de tu aplicación web de Google Apps Script (termina en /exec). Solo se hace una vez en esta computadora.</p>
+      <input id="setup_url" type="text" placeholder="https://script.google.com/macros/s/..../exec">
+      <div style="margin-top:12px">
+        <button class="btn btn-primary" id="setup_save">Conectar</button>
+        <span id="setup_status" style="margin-left:10px; font-size:12px;"></span>
+      </div>
+    </div>`;
+  document.getElementById('setup_save').onclick = async ()=>{
+    const val = document.getElementById('setup_url').value;
+    const status = document.getElementById('setup_status');
+    if(!val || !val.includes('/exec')){ status.textContent='Pega la URL completa (debe terminar en /exec).'; status.style.color='var(--red)'; return; }
+    setApiUrl(val);
+    status.textContent = 'Conectando...'; status.style.color='var(--muted)';
+    document.getElementById('sidebar').style.display = '';
+    document.getElementById('main').style.maxWidth=''; document.getElementById('main').style.margin='';
+    await boot();
+  };
+}
+
+const NAV = [
+  {id:'dashboard', label:'Dashboard'},
+  {id:'pedidos', label:'Pedidos'},
+  {id:'costos', label:'Costos y proveedores'},
+  {id:'finanzas', label:'Finanzas'},
+  {id:'calculadora', label:'Calculadora de rentabilidad'},
+  {id:'campanas', label:'Campañas'},
+];
+
+function renderNav(){
+  const nav = document.getElementById('nav');
+  nav.innerHTML = '';
+  NAV.forEach(item=>{
+    const b = document.createElement('button');
+    b.className = STATE.tab===item.id ? 'active' : '';
+    b.innerHTML = '<span class="dot"></span>' + item.label;
+    b.onclick = ()=>{ STATE.tab = item.id; renderNav(); renderMain(); };
+    nav.appendChild(b);
+  });
+  const changeLink = document.getElementById('change_url');
+  if(changeLink){
+    changeLink.onclick = (ev)=>{
+      ev.preventDefault();
+      if(confirm('¿Cambiar la URL de conexión de datos? Los datos ya guardados no se pierden, solo cambia a dónde apunta esta computadora.')){
+        localStorage.removeItem(API_URL_KEY);
+        renderSetup();
+      }
+    };
+  }
+}
+
+function renderMain(){
+  const main = document.getElementById('main');
+  if(!STATE.loaded){ main.innerHTML = '<p style="color:var(--muted)">Cargando datos...</p>'; return; }
+  const renderers = {
+    dashboard: renderDashboard, pedidos: renderPedidos, costos: renderCostos,
+    finanzas: renderFinanzas, calculadora: renderCalculadora, campanas: renderCampanas
+  };
+  main.innerHTML = '';
+  renderers[STATE.tab]();
+}
+
+function head(title, hint){
+  const div = document.createElement('div');
+  div.className = 'page-head';
+  div.innerHTML = `<div><h1>${title}</h1><p>${hint||''}</p></div>`;
+  return div;
+}
+
+/* ================= DASHBOARD ================= */
+function computeMetrics(pedidos, compras, egresos){
+  const total = pedidos.length;
+  const confirmados = pedidos.filter(p=>['Confirmado','En tránsito','Entregado'].includes(p.estado)).length;
+  const entregados = pedidos.filter(p=>p.estado==='Entregado');
+  const enTransito = pedidos.filter(p=>p.estado==='En tránsito');
+  const devueltos = pedidos.filter(p=>p.estado==='Devuelto').length;
+
+  const facturacionTotal = pedidos.reduce((s,p)=>s+parseNum(p.precioVenta),0);
+  const facturacionEntregada = entregados.reduce((s,p)=>s+parseNum(p.precioVenta),0);
+  const facturacionTransito = enTransito.reduce((s,p)=>s+parseNum(p.precioVenta),0);
+
+  const costoProductoEntregado = entregados.reduce((s,p)=>s+parseNum(p.costoProducto),0);
+  const costoEnvioEntregado = entregados.reduce((s,p)=>s+parseNum(p.costoEnvio),0);
+
+  const gastoAds = egresos.filter(e=>e.tipo==='Campaña').reduce((s,e)=>s+parseNum(e.monto),0);
+  const gastoOtros = egresos.filter(e=>e.tipo==='Otro').reduce((s,e)=>s+parseNum(e.monto),0);
+  const gastoCompras = compras.reduce((s,c)=>s+parseNum(c.total),0);
+
+  const utilidadNeta = facturacionEntregada - costoProductoEntregado - costoEnvioEntregado - gastoAds - gastoOtros;
+  const pctConfirmacion = total ? (confirmados/total*100) : 0;
+  const pctEntrega = confirmados ? (entregados.length/confirmados*100) : 0;
+
+  return { total, confirmados, entregadosN:entregados.length, devueltos,
+    facturacionTotal, facturacionEntregada, facturacionTransito,
+    costoProductoEntregado, costoEnvioEntregado, gastoAds, gastoOtros, gastoCompras,
+    utilidadNeta, pctConfirmacion, pctEntrega };
+}
+
+function renderDashboard(){
+  const main = document.getElementById('main');
+  main.appendChild(head('Dashboard', 'Así va Ventura ahora mismo.'));
+  const m = computeMetrics(STATE.pedidos, STATE.compras, STATE.egresos);
+
+  const kpis = document.createElement('div'); kpis.className = 'kpi-grid';
+  kpis.innerHTML = `
+    <div class="kpi"><div class="label">Pedidos totales</div><div class="value">${m.total}</div>
+      <div class="sub">${m.devueltos} devueltos</div></div>
+    <div class="kpi"><div class="label">% Confirmación</div><div class="value">${pct(m.pctConfirmacion)}</div>
+      <div class="sub">${m.confirmados} confirmados</div></div>
+    <div class="kpi"><div class="label">% Entrega</div><div class="value">${pct(m.pctEntrega)}</div>
+      <div class="sub">${m.entregadosN} entregados</div></div>
+    <div class="kpi"><div class="label">Facturación entregada</div><div class="value">${money(m.facturacionEntregada)}</div>
+      <div class="sub">${money(m.facturacionTransito)} en tránsito</div></div>
+    <div class="kpi"><div class="label">Utilidad neta</div><div class="value ${m.utilidadNeta>=0?'pos':'neg'}">${money(m.utilidadNeta)}</div>
+      <div class="sub">Entregado − costos − ads − otros gastos</div></div>
+  `;
+  main.appendChild(kpis);
+
+  const cols = document.createElement('div'); cols.className = 'two-col';
+
+  const p1 = document.createElement('div'); p1.className = 'panel';
+  p1.innerHTML = `<h2>Desglose de utilidad</h2><p class="hint">A dónde va cada dólar entregado</p>`;
+  const rows = [
+    ['Facturación entregada', m.facturacionEntregada, 'pos'],
+    ['Costo producto', -m.costoProductoEntregado, 'neg'],
+    ['Costo envío', -m.costoEnvioEntregado, 'neg'],
+    ['Gasto en campañas (ads)', -m.gastoAds, 'neg'],
+    ['Otros gastos', -m.gastoOtros, 'neg'],
+  ];
+  let tbl = '<table><tbody>';
+  rows.forEach(r=>{
+    tbl += `<tr><td>${r[0]}</td><td style="text-align:right; font-weight:600; color:${r[2]==='pos'?'var(--green)':'var(--red)'}">${r[1]<0?'-':''}${money(Math.abs(r[1]))}</td></tr>`;
+  });
+  tbl += `<tr><td style="font-weight:700">Utilidad neta</td><td style="text-align:right; font-weight:700; color:${m.utilidadNeta>=0?'var(--green)':'var(--red)'}">${money(m.utilidadNeta)}</td></tr>`;
+  tbl += '</tbody></table>';
+  p1.innerHTML += tbl;
+  cols.appendChild(p1);
+
+  const p2 = document.createElement('div'); p2.className='panel';
+  p2.innerHTML = `<h2>Estados de pedidos</h2><p class="hint">Distribución actual</p>`;
+  let tbl2 = '<table><tbody>';
+  ESTADOS.forEach(es=>{
+    const n = STATE.pedidos.filter(p=>p.estado===es).length;
+    const total = STATE.pedidos.length || 1;
+    const w = Math.round(n/total*100);
+    tbl2 += `<tr><td><span class="pill ${estadoClass(es)}">${es}</span></td><td style="width:60%"><div class="bar"><div class="bar-fill" style="width:${w}%"></div></div></td><td style="text-align:right">${n}</td></tr>`;
+  });
+  tbl2 += '</tbody></table>';
+  p2.innerHTML += tbl2;
+  cols.appendChild(p2);
+
+  main.appendChild(cols);
+
+  if(STATE.pedidos.length===0){
+    const emptyPanel = document.createElement('div'); emptyPanel.className='panel';
+    emptyPanel.innerHTML = `<h2>Aún no hay pedidos cargados</h2><p class="hint">Ve a la pestaña "Pedidos" para agregar el primero, manualmente o importando el Excel de Rocket/Dropi.</p>`;
+    main.appendChild(emptyPanel);
+  }
+}
+
+/* ================= PEDIDOS ================= */
+let pedidoFilters = { estado:'', transportadora:'' };
+
+function renderPedidos(){
+  const main = document.getElementById('main');
+  main.appendChild(head('Pedidos', 'Trazabilidad: guía, transportadora, estado y cliente.'));
+
+  // Add form
+  const formPanel = document.createElement('div'); formPanel.className='panel';
+  formPanel.innerHTML = `<h2>Agregar pedido</h2>`;
+  const grid = document.createElement('div'); grid.className='form-grid';
+  const fields = [
+    ['fecha','Fecha','date'], ['cliente','Cliente','text'], ['telefono','Teléfono','text'],
+    ['ciudad','Ciudad','text'], ['producto','Producto','text'], ['cantidad','Cantidad','number'],
+    ['precioVenta','Precio venta','number'], ['costoProducto','Costo producto','number'],
+    ['costoEnvio','Costo envío','number'], ['transportadora','Transportadora','text'], ['guia','Guía / tracking','text'],
+  ];
+  fields.forEach(([id,label,type])=>{
+    const f = document.createElement('div'); f.className='field';
+    f.innerHTML = `<label>${label}</label><input id="pf_${id}" type="${type}" ${type==='number'?'step="0.01"':''}>`;
+    grid.appendChild(f);
+  });
+  const estadoField = document.createElement('div'); estadoField.className='field';
+  estadoField.innerHTML = `<label>Estado</label><select id="pf_estado">${ESTADOS.map(e=>`<option>${e}</option>`).join('')}</select>`;
+  grid.appendChild(estadoField);
+  formPanel.appendChild(grid);
+
+  const btnRow = document.createElement('div');
+  const saveBtn = document.createElement('button'); saveBtn.className='btn btn-primary'; saveBtn.textContent='Guardar pedido';
+  const status = document.createElement('span'); status.style.marginLeft='10px'; status.style.color='var(--muted)'; status.style.fontSize='12px';
+  saveBtn.onclick = async ()=>{
+    const p = { id: uid() };
+    fields.forEach(([id])=>{ p[id] = document.getElementById('pf_'+id).value; });
+    p.estado = document.getElementById('pf_estado').value;
+    if(!p.cliente && !p.producto){ status.textContent = 'Agrega al menos cliente o producto.'; status.style.color='var(--red)'; return; }
+    STATE.pedidos.push(p);
+    const ok = await saveList(KEYS.pedidos, STATE.pedidos);
+    status.textContent = ok ? 'Guardado.' : 'No se pudo guardar.';
+    status.style.color = ok ? 'var(--green)' : 'var(--red)';
+    renderMain();
+  };
+  btnRow.appendChild(saveBtn); btnRow.appendChild(status);
+  formPanel.appendChild(btnRow);
+  main.appendChild(formPanel);
+
+  // Import CSV
+  const importPanel = document.createElement('div'); importPanel.className='panel';
+  importPanel.innerHTML = `<h2>Importar pedidos (CSV / Excel exportado)</h2>
+    <p class="hint">Columnas esperadas: tracking, estado, transportadora, envio, productos, ud, precio, nombre, direccion, ciudad, telefono, email — como el "Resumen Excel" de Rocket/Dropi. Guarda tu Excel como CSV antes de subir.</p>`;
+  const fileInput = document.createElement('input'); fileInput.type='file'; fileInput.accept='.csv,text/csv';
+  const importStatus = document.createElement('div'); importStatus.className='note';
+  fileInput.onchange = (ev)=>{
+    const file = ev.target.files[0]; if(!file) return;
+    const reader = new FileReader();
+    reader.onload = async (e)=>{
+      try{
+        const rows = parseCSV(e.target.result);
+        if(rows.length < 2){ importStatus.textContent = 'El archivo no tiene filas de datos.'; return; }
+        const headerRow = rows[0].map(h=>h.trim().toLowerCase());
+        const idx = (name)=>headerRow.findIndex(h=>h.includes(name));
+        const iTracking=idx('track'), iEstado=idx('estado'), iTrans=idx('transport'),
+          iEnvio=idx('env'), iProd=idx('product'), iUd=idx('ud'), iPrecio=idx('precio'),
+          iNombre=idx('nombre'), iDir=idx('direcc'), iCiudad=idx('ciudad'),
+          iTel=idx('tel'), iEmail=idx('email');
+        let added = 0;
+        for(let r=1; r<rows.length; r++){
+          const row = rows[r];
+          if(!row || row.every(c=>!c || !c.trim())) continue;
+          STATE.pedidos.push({
+            id: uid(),
+            fecha: '',
+            cliente: iNombre>-1 ? row[iNombre] : '',
+            telefono: iTel>-1 ? row[iTel] : '',
+            ciudad: iCiudad>-1 ? row[iCiudad] : '',
+            producto: iProd>-1 ? row[iProd] : '',
+            cantidad: iUd>-1 ? row[iUd] : '',
+            precioVenta: iPrecio>-1 ? row[iPrecio] : '',
+            costoProducto: '', costoEnvio: iEnvio>-1 ? row[iEnvio] : '',
+            transportadora: iTrans>-1 ? row[iTrans] : '',
+            guia: iTracking>-1 ? row[iTracking] : '',
+            estado: (iEstado>-1 && ESTADOS.includes(row[iEstado])) ? row[iEstado] : 'Pendiente',
+            email: iEmail>-1 ? row[iEmail] : '', direccion: iDir>-1 ? row[iDir] : ''
+          });
+          added++;
+        }
+        const ok = await saveList(KEYS.pedidos, STATE.pedidos);
+        importStatus.textContent = ok ? `Importados ${added} pedidos.` : 'Se leyó el archivo pero no se pudo guardar.';
+        importStatus.style.color = ok ? 'var(--green)' : 'var(--red)';
+        renderMain();
+      }catch(err){ importStatus.textContent = 'No se pudo leer el archivo: ' + err.message; importStatus.style.color='var(--red)'; }
+    };
+    reader.readAsText(file);
+  };
+  importPanel.appendChild(fileInput);
+  importPanel.appendChild(importStatus);
+  main.appendChild(importPanel);
+
+  // Table + filters
+  const tablePanel = document.createElement('div'); tablePanel.className='panel';
+  tablePanel.innerHTML = `<h2>Pedidos registrados (${STATE.pedidos.length})</h2>`;
+  const filters = document.createElement('div'); filters.className='filters';
+  const estadoSel = document.createElement('div'); estadoSel.className='field';
+  estadoSel.innerHTML = `<label>Estado</label><select id="filt_estado"><option value="">Todos</option>${ESTADOS.map(e=>`<option ${pedidoFilters.estado===e?'selected':''}>${e}</option>`).join('')}</select>`;
+  filters.appendChild(estadoSel);
+  const transInput = document.createElement('div'); transInput.className='field';
+  transInput.innerHTML = `<label>Transportadora</label><input id="filt_trans" value="${pedidoFilters.transportadora}">`;
+  filters.appendChild(transInput);
+  tablePanel.appendChild(filters);
+
+  setTimeout(()=>{
+    document.getElementById('filt_estado').onchange = (e)=>{ pedidoFilters.estado = e.target.value; renderMain(); };
+    document.getElementById('filt_trans').oninput = (e)=>{ pedidoFilters.transportadora = e.target.value; renderMain(); };
+  },0);
+
+  let list = STATE.pedidos;
+  if(pedidoFilters.estado) list = list.filter(p=>p.estado===pedidoFilters.estado);
+  if(pedidoFilters.transportadora) list = list.filter(p=>(p.transportadora||'').toLowerCase().includes(pedidoFilters.transportadora.toLowerCase()));
+
+  const wrap = document.createElement('div'); wrap.className='table-wrap';
+  if(list.length===0){
+    wrap.innerHTML = `<div class="empty">No hay pedidos que coincidan con el filtro.</div>`;
+  } else {
+    let rows = '';
+    list.slice().reverse().forEach(p=>{
+      rows += `<tr>
+        <td>${p.fecha||'—'}</td>
+        <td>${p.guia||'—'}</td>
+        <td><span class="pill ${estadoClass(p.estado)}">${p.estado}</span></td>
+        <td>${p.transportadora||'—'}</td>
+        <td>${p.cliente||'—'}</td>
+        <td>${p.producto||'—'}</td>
+        <td>${p.cantidad||'—'}</td>
+        <td>${money(p.precioVenta)}</td>
+        <td>${money(p.costoProducto)}</td>
+        <td>${money(p.costoEnvio)}</td>
+        <td>${p.ciudad||'—'}</td>
+        <td class="row-actions"><button class="btn btn-danger btn-sm" data-del="${p.id}">Eliminar</button></td>
+      </tr>`;
+    });
+    wrap.innerHTML = `<table><thead><tr>
+      <th>Fecha</th><th>Guía</th><th>Estado</th><th>Transportadora</th><th>Cliente</th>
+      <th>Producto</th><th>Cant.</th><th>Precio</th><th>Costo prod.</th><th>Costo envío</th><th>Ciudad</th><th></th>
+    </tr></thead><tbody>${rows}</tbody></table>`;
+  }
+  tablePanel.appendChild(wrap);
+  main.appendChild(tablePanel);
+
+  setTimeout(()=>{
+    document.querySelectorAll('[data-del]').forEach(btn=>{
+      btn.onclick = async ()=>{
+        STATE.pedidos = STATE.pedidos.filter(p=>p.id!==btn.dataset.del);
+        await saveList(KEYS.pedidos, STATE.pedidos);
+        renderMain();
+      };
+    });
+  },0);
+}
+
+function parseCSV(text){
+  const rows = [];
+  let row = [], field = '', inQuotes = false;
+  const sep = text.indexOf(';') > -1 && text.indexOf(',') === -1 ? ';' : ',';
+  for(let i=0;i<text.length;i++){
+    const c = text[i];
+    if(inQuotes){
+      if(c === '"'){ if(text[i+1]==='"'){ field+='"'; i++; } else { inQuotes=false; } }
+      else field += c;
+    } else {
+      if(c === '"') inQuotes = true;
+      else if(c === sep){ row.push(field); field=''; }
+      else if(c === '\n'){ row.push(field); rows.push(row); row=[]; field=''; }
+      else if(c === '\r'){ /* skip */ }
+      else field += c;
+    }
+  }
+  if(field.length || row.length){ row.push(field); rows.push(row); }
+  return rows.filter(r=>r.length>1 || (r[0]&&r[0].trim()));
+}
+
+/* ================= COSTOS Y PROVEEDORES ================= */
+function renderCostos(){
+  const main = document.getElementById('main');
+  main.appendChild(head('Costos y proveedores', 'Registra tus compras: qué compraste, a quién y a qué costo.'));
+
+  const formPanel = document.createElement('div'); formPanel.className='panel';
+  formPanel.innerHTML = `<h2>Registrar compra</h2>`;
+  const grid = document.createElement('div'); grid.className='form-grid';
+  const fields = [['fecha','Fecha','date'],['proveedor','Proveedor','text'],['producto','Producto','text'],
+    ['cantidad','Cantidad','number'],['costoUnitario','Costo unitario','number']];
+  fields.forEach(([id,label,type])=>{
+    const f=document.createElement('div'); f.className='field';
+    f.innerHTML = `<label>${label}</label><input id="cf_${id}" type="${type}" ${type==='number'?'step="0.01"':''}>`;
+    grid.appendChild(f);
+  });
+  formPanel.appendChild(grid);
+  const btn = document.createElement('button'); btn.className='btn btn-primary'; btn.textContent='Guardar compra';
+  const status = document.createElement('span'); status.style.marginLeft='10px'; status.style.fontSize='12px';
+  btn.onclick = async ()=>{
+    const c = {id:uid()};
+    fields.forEach(([id])=>{ c[id]=document.getElementById('cf_'+id).value; });
+    c.total = parseNum(c.cantidad) * parseNum(c.costoUnitario);
+    if(!c.producto){ status.textContent='Agrega el producto.'; status.style.color='var(--red)'; return; }
+    STATE.compras.push(c);
+    const ok = await saveList(KEYS.compras, STATE.compras);
+    status.textContent = ok?'Guardado.':'No se pudo guardar.'; status.style.color= ok?'var(--green)':'var(--red)';
+    renderMain();
+  };
+  const row = document.createElement('div'); row.appendChild(btn); row.appendChild(status);
+  formPanel.appendChild(row);
+  main.appendChild(formPanel);
+
+  const tablePanel = document.createElement('div'); tablePanel.className='panel';
+  const totalCompras = STATE.compras.reduce((s,c)=>s+parseNum(c.total),0);
+  tablePanel.innerHTML = `<h2>Compras registradas (${STATE.compras.length})</h2><p class="hint">Total invertido en compras: ${money(totalCompras)}</p>`;
+  const wrap = document.createElement('div'); wrap.className='table-wrap';
+  if(STATE.compras.length===0){
+    wrap.innerHTML = `<div class="empty">Aún no registras compras a proveedores.</div>`;
+  } else {
+    let rows='';
+    STATE.compras.slice().reverse().forEach(c=>{
+      rows += `<tr><td>${c.fecha||'—'}</td><td>${c.proveedor||'—'}</td><td>${c.producto||'—'}</td>
+        <td>${c.cantidad||'—'}</td><td>${money(c.costoUnitario)}</td><td>${money(c.total)}</td>
+        <td><button class="btn btn-danger btn-sm" data-delc="${c.id}">Eliminar</button></td></tr>`;
+    });
+    wrap.innerHTML = `<table><thead><tr><th>Fecha</th><th>Proveedor</th><th>Producto</th><th>Cant.</th><th>Costo unit.</th><th>Total</th><th></th></tr></thead><tbody>${rows}</tbody></table>`;
+  }
+  tablePanel.appendChild(wrap);
+  main.appendChild(tablePanel);
+
+  setTimeout(()=>{
+    document.querySelectorAll('[data-delc]').forEach(b=>{
+      b.onclick = async ()=>{ STATE.compras = STATE.compras.filter(c=>c.id!==b.dataset.delc); await saveList(KEYS.compras, STATE.compras); renderMain(); };
+    });
+  },0);
+}
+
+/* ================= FINANZAS ================= */
+function renderFinanzas(){
+  const main = document.getElementById('main');
+  main.appendChild(head('Finanzas', 'Ingresos, egresos y utilidad real del negocio.'));
+  const m = computeMetrics(STATE.pedidos, STATE.compras, STATE.egresos);
+
+  const kpis = document.createElement('div'); kpis.className='kpi-grid';
+  kpis.innerHTML = `
+    <div class="kpi"><div class="label">Facturación entregada</div><div class="value pos">${money(m.facturacionEntregada)}</div></div>
+    <div class="kpi"><div class="label">Por cobrar (en tránsito)</div><div class="value">${money(m.facturacionTransito)}</div></div>
+    <div class="kpi"><div class="label">Costos de producto + envío</div><div class="value neg">${money(m.costoProductoEntregado+m.costoEnvioEntregado)}</div></div>
+    <div class="kpi"><div class="label">Gasto en ads</div><div class="value neg">${money(m.gastoAds)}</div></div>
+    <div class="kpi"><div class="label">Utilidad neta</div><div class="value ${m.utilidadNeta>=0?'pos':'neg'}">${money(m.utilidadNeta)}</div></div>
+  `;
+  main.appendChild(kpis);
+
+  const formPanel = document.createElement('div'); formPanel.className='panel';
+  formPanel.innerHTML = `<h2>Registrar egreso</h2><p class="hint">Gastos que no son de campañas publicitarias (para eso usa la pestaña Campañas). Ej: empaques, sueldos, herramientas.</p>`;
+  const grid = document.createElement('div'); grid.className='form-grid';
+  grid.innerHTML = `
+    <div class="field"><label>Fecha</label><input id="ef_fecha" type="date"></div>
+    <div class="field"><label>Concepto</label><input id="ef_concepto" type="text"></div>
+    <div class="field"><label>Monto</label><input id="ef_monto" type="number" step="0.01"></div>
+  `;
+  formPanel.appendChild(grid);
+  const btn = document.createElement('button'); btn.className='btn btn-primary'; btn.textContent='Guardar egreso';
+  const status = document.createElement('span'); status.style.marginLeft='10px'; status.style.fontSize='12px';
+  btn.onclick = async ()=>{
+    const fecha=document.getElementById('ef_fecha').value, concepto=document.getElementById('ef_concepto').value, monto=document.getElementById('ef_monto').value;
+    if(!concepto){ status.textContent='Agrega el concepto.'; status.style.color='var(--red)'; return; }
+    STATE.egresos.push({id:uid(), fecha, concepto, monto, tipo:'Otro'});
+    const ok = await saveList(KEYS.egresos, STATE.egresos);
+    status.textContent = ok?'Guardado.':'No se pudo guardar.'; status.style.color=ok?'var(--green)':'var(--red)';
+    renderMain();
+  };
+  const row = document.createElement('div'); row.appendChild(btn); row.appendChild(status);
+  formPanel.appendChild(row);
+  main.appendChild(formPanel);
+
+  const tablePanel = document.createElement('div'); tablePanel.className='panel';
+  const otros = STATE.egresos.filter(e=>e.tipo==='Otro');
+  tablePanel.innerHTML = `<h2>Egresos generales (${otros.length})</h2>`;
+  const wrap = document.createElement('div'); wrap.className='table-wrap';
+  if(otros.length===0){
+    wrap.innerHTML = `<div class="empty">Sin egresos generales registrados.</div>`;
+  } else {
+    let rows='';
+    otros.slice().reverse().forEach(e=>{
+      rows += `<tr><td>${e.fecha||'—'}</td><td>${e.concepto}</td><td>${money(e.monto)}</td>
+        <td><button class="btn btn-danger btn-sm" data-dele="${e.id}">Eliminar</button></td></tr>`;
+    });
+    wrap.innerHTML = `<table><thead><tr><th>Fecha</th><th>Concepto</th><th>Monto</th><th></th></tr></thead><tbody>${rows}</tbody></table>`;
+  }
+  tablePanel.appendChild(wrap);
+  main.appendChild(tablePanel);
+
+  setTimeout(()=>{
+    document.querySelectorAll('[data-dele]').forEach(b=>{
+      b.onclick = async ()=>{ STATE.egresos = STATE.egresos.filter(e=>e.id!==b.dataset.dele); await saveList(KEYS.egresos, STATE.egresos); renderMain(); };
+    });
+  },0);
+}
+
+/* ================= CAMPAÑAS ================= */
+function renderCampanas(){
+  const main = document.getElementById('main');
+  main.appendChild(head('Campañas', 'Gasto publicitario por campaña y producto.'));
+
+  const campanas = STATE.egresos.filter(e=>e.tipo==='Campaña');
+  const totalAds = campanas.reduce((s,c)=>s+parseNum(c.monto),0);
+  const kpis = document.createElement('div'); kpis.className='kpi-grid';
+  kpis.innerHTML = `<div class="kpi"><div class="label">Invertido en campañas</div><div class="value neg">${money(totalAds)}</div>
+    <div class="sub">${campanas.length} registros</div></div>`;
+  main.appendChild(kpis);
+
+  const formPanel = document.createElement('div'); formPanel.className='panel';
+  formPanel.innerHTML = `<h2>Registrar gasto de campaña</h2>`;
+  const grid = document.createElement('div'); grid.className='form-grid';
+  grid.innerHTML = `
+    <div class="field"><label>Fecha</label><input id="cp_fecha" type="date"></div>
+    <div class="field"><label>Campaña</label><input id="cp_nombre" type="text"></div>
+    <div class="field"><label>Plataforma</label><input id="cp_plataforma" type="text" placeholder="Meta Ads, TikTok..."></div>
+    <div class="field"><label>Producto asociado</label><input id="cp_producto" type="text"></div>
+    <div class="field"><label>Monto invertido</label><input id="cp_monto" type="number" step="0.01"></div>
+  `;
+  formPanel.appendChild(grid);
+  const btn = document.createElement('button'); btn.className='btn btn-primary'; btn.textContent='Guardar gasto';
+  const status = document.createElement('span'); status.style.marginLeft='10px'; status.style.fontSize='12px';
+  btn.onclick = async ()=>{
+    const fecha=document.getElementById('cp_fecha').value, nombre=document.getElementById('cp_nombre').value,
+      plataforma=document.getElementById('cp_plataforma').value, producto=document.getElementById('cp_producto').value,
+      monto=document.getElementById('cp_monto').value;
+    if(!nombre){ status.textContent='Agrega el nombre de la campaña.'; status.style.color='var(--red)'; return; }
+    STATE.egresos.push({id:uid(), fecha, concepto:nombre, plataforma, producto, monto, tipo:'Campaña'});
+    const ok = await saveList(KEYS.egresos, STATE.egresos);
+    status.textContent = ok?'Guardado.':'No se pudo guardar.'; status.style.color=ok?'var(--green)':'var(--red)';
+    renderMain();
+  };
+  const row = document.createElement('div'); row.appendChild(btn); row.appendChild(status);
+  formPanel.appendChild(row);
+  main.appendChild(formPanel);
+
+  const tablePanel = document.createElement('div'); tablePanel.className='panel';
+  tablePanel.innerHTML = `<h2>Gastos de campañas registrados</h2>`;
+  const wrap = document.createElement('div'); wrap.className='table-wrap';
+  if(campanas.length===0){
+    wrap.innerHTML = `<div class="empty">Sin gastos de campaña registrados.</div>`;
+  } else {
+    let rows='';
+    campanas.slice().reverse().forEach(c=>{
+      rows += `<tr><td>${c.fecha||'—'}</td><td>${c.concepto}</td><td>${c.plataforma||'—'}</td><td>${c.producto||'—'}</td><td>${money(c.monto)}</td>
+        <td><button class="btn btn-danger btn-sm" data-delcp="${c.id}">Eliminar</button></td></tr>`;
+    });
+    wrap.innerHTML = `<table><thead><tr><th>Fecha</th><th>Campaña</th><th>Plataforma</th><th>Producto</th><th>Monto</th><th></th></tr></thead><tbody>${rows}</tbody></table>`;
+  }
+  tablePanel.appendChild(wrap);
+  main.appendChild(tablePanel);
+
+  setTimeout(()=>{
+    document.querySelectorAll('[data-delcp]').forEach(b=>{
+      b.onclick = async ()=>{ STATE.egresos = STATE.egresos.filter(e=>e.id!==b.dataset.delcp); await saveList(KEYS.egresos, STATE.egresos); renderMain(); };
+    });
+  },0);
+}
+
+/* ================= CALCULADORA DE RENTABILIDAD ================= */
+let calc = { precioVenta:25, costoProducto:8, costoEnvio:4, pctConfirmacion:70, pctEntrega:80, inversion:100 };
+
+function renderCalculadora(){
+  const main = document.getElementById('main');
+  main.appendChild(head('Calculadora de rentabilidad', 'Simula cuánto puedes invertir en ads sin perder plata, dado tu costo y tus tasas de confirmación/entrega.'));
+
+  const panel = document.createElement('div'); panel.className='panel';
+  const grid = document.createElement('div'); grid.className='form-grid';
+  grid.innerHTML = `
+    <div class="field"><label>Precio de venta</label><input id="k_precio" type="number" step="0.01" value="${calc.precioVenta}"></div>
+    <div class="field"><label>Costo de producto</label><input id="k_costoP" type="number" step="0.01" value="${calc.costoProducto}"></div>
+    <div class="field"><label>Costo de envío</label><input id="k_costoE" type="number" step="0.01" value="${calc.costoEnvio}"></div>
+    <div class="field"><label>Inversión publicitaria</label><input id="k_inv" type="number" step="1" value="${calc.inversion}"></div>
+  `;
+  panel.appendChild(grid);
+
+  const sliders = document.createElement('div'); sliders.style.marginTop='10px';
+  sliders.innerHTML = `
+    <label>% Confirmación — pedidos creados que terminan confirmados: <b id="k_confL">${calc.pctConfirmacion}%</b></label>
+    <input id="k_conf" type="range" min="0" max="100" value="${calc.pctConfirmacion}">
+    <label style="margin-top:10px">% Entrega — confirmados que llegan al cliente: <b id="k_entL">${calc.pctEntrega}%</b></label>
+    <input id="k_ent" type="range" min="0" max="100" value="${calc.pctEntrega}">
+  `;
+  panel.appendChild(sliders);
+  main.appendChild(panel);
+
+  const resultPanel = document.createElement('div'); resultPanel.className='panel';
+  resultPanel.innerHTML = `<h2>Resultado de la simulación</h2>`;
+  const resBody = document.createElement('div');
+  resultPanel.appendChild(resBody);
+  main.appendChild(resultPanel);
+
+  function recalc(){
+    calc.precioVenta = parseNum(document.getElementById('k_precio').value);
+    calc.costoProducto = parseNum(document.getElementById('k_costoP').value);
+    calc.costoEnvio = parseNum(document.getElementById('k_costoE').value);
+    calc.inversion = parseNum(document.getElementById('k_inv').value);
+    calc.pctConfirmacion = parseNum(document.getElementById('k_conf').value);
+    calc.pctEntrega = parseNum(document.getElementById('k_ent').value);
+    document.getElementById('k_confL').textContent = calc.pctConfirmacion + '%';
+    document.getElementById('k_entL').textContent = calc.pctEntrega + '%';
+
+    // Cuántos pedidos entrantes puede pagar esa inversión (asumiendo CPA implícito por pedido entrante = inversión / pedidos entrantes)
+    // Para un CPA dado, pedidos entrantes = inversion / CPA. Aquí resolvemos el CPA máximo que deja profit >= 0.
+    const margenPorEntregado = calc.precioVenta - calc.costoProducto - calc.costoEnvio;
+    const tasaEntregaEfectiva = (calc.pctConfirmacion/100) * (calc.pctEntrega/100);
+    const cpaMaximo = margenPorEntregado * tasaEntregaEfectiva; // costo por pedido entrante que deja profit = 0
+    const roasMinimo = tasaEntregaEfectiva > 0 ? (calc.precioVenta / (cpaMaximo || 1)) : 0;
+
+    // Con la inversión dada, estimamos pedidos entrantes si gastamos toda la inversión al CPA máximo (punto de equilibrio)
+    const pedidosEntrantesEquilibrio = cpaMaximo>0 ? calc.inversion / cpaMaximo : 0;
+
+    // Profit bruto con la inversión dada, asumiendo que se traduce en 1 pedido entrante por cada $CPA (usamos CPA máximo como referencia de costo real por pedido)
+    // Mostramos escenario simple: ingresos - costos - inversión, para el número de pedidos entrantes de equilibrio
+    const entregadosEquilibrio = pedidosEntrantesEquilibrio * tasaEntregaEfectiva;
+    const ingresos = entregadosEquilibrio * calc.precioVenta;
+    const costoProdTotal = entregadosEquilibrio * calc.costoProducto;
+    const costoEnvioTotal = entregadosEquilibrio * calc.costoEnvio;
+    const profitBruto = ingresos - costoProdTotal - costoEnvioTotal - calc.inversion;
+
+    resBody.innerHTML = `
+      <table><tbody>
+        <tr><td>Margen por pedido entregado (antes de ads)</td><td style="text-align:right; font-weight:600">${money(margenPorEntregado)}</td></tr>
+        <tr><td>Tasa de entrega efectiva (confirmación × entrega)</td><td style="text-align:right; font-weight:600">${pct(tasaEntregaEfectiva*100)}</td></tr>
+        <tr><td><b>CPA máximo</b> — lo máximo que puedes pagar por pedido entrante sin perder plata</td><td style="text-align:right; font-weight:700; color:var(--gold)">${money(cpaMaximo)}</td></tr>
+        <tr><td><b>ROAS mínimo</b> — retorno mínimo sobre lo invertido en ads</td><td style="text-align:right; font-weight:700; color:var(--gold)">${(roasMinimo||0).toFixed(2)}x</td></tr>
+        <tr><td>Pedidos entrantes en punto de equilibrio con tu inversión</td><td style="text-align:right; font-weight:600">${pedidosEntrantesEquilibrio.toFixed(1)}</td></tr>
+        <tr><td style="font-weight:700">Profit bruto estimado (si el CPA real = CPA máximo)</td><td style="text-align:right; font-weight:700; color:${profitBruto>=0?'var(--green)':'var(--red)'}">${money(profitBruto)}</td></tr>
+      </tbody></table>
+      <p class="note">Este profit da ~$0 a propósito: el CPA máximo es, por definición, el punto de equilibrio. Si tu CPA real (lo que de verdad pagas por pedido en Meta/TikTok) es menor al CPA máximo mostrado arriba, estás ganando; si es mayor, estás perdiendo.</p>
+    `;
+  }
+  ['k_precio','k_costoP','k_costoE','k_inv','k_conf','k_ent'].forEach(id=>{
+    document.getElementById(id).addEventListener('input', recalc);
+  });
+  recalc();
+}
+
+boot();
+</script>
+</body>
+</html>
