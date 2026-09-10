@@ -148,33 +148,37 @@
 
 <script>
 /* ---------- storage helpers (Google Sheets vía Apps Script) ---------- */
-const KEYS = { pedidos:'ventura:pedidos', compras:'ventura:compras', egresos:'ventura:egresos' };
+const KEYS = { pedidos:'ventura:pedidos', compras:'ventura:compras', egresos:'ventura:egresos', config:'ventura:config' };
 const API_URL_KEY = 'venturaApiUrl';
 function getApiUrl(){ return localStorage.getItem(API_URL_KEY) || ''; }
 function setApiUrl(u){ localStorage.setItem(API_URL_KEY, u.trim()); }
 
-async function loadList(key){
+async function loadRaw(key, fallback){
   try{
     const url = getApiUrl();
-    if(!url) return [];
+    if(!url) return fallback;
     const res = await fetch(url + '?key=' + encodeURIComponent(key));
-    const data = await res.json();
-    return Array.isArray(data) ? data : [];
-  }catch(e){ return []; }
+    const text = await res.text();
+    if(!text) return fallback;
+    const data = JSON.parse(text);
+    return (data===null || data===undefined) ? fallback : data;
+  }catch(e){ return fallback; }
 }
-async function saveList(key, arr){
+async function saveRaw(key, value){
   try{
     const url = getApiUrl();
     if(!url) return false;
     const res = await fetch(url, {
       method:'POST',
       headers:{'Content-Type':'text/plain;charset=utf-8'},
-      body: JSON.stringify({ key, value: JSON.stringify(arr) })
+      body: JSON.stringify({ key, value: JSON.stringify(value) })
     });
     const data = await res.json();
     return !!data.ok;
   }catch(e){ return false; }
 }
+async function loadList(key){ const r = await loadRaw(key, []); return Array.isArray(r) ? r : []; }
+async function saveList(key, arr){ return saveRaw(key, arr); }
 function uid(){ return Date.now().toString(36) + Math.random().toString(36).slice(2,7); }
 function money(n){
   n = Number(n)||0;
@@ -184,19 +188,39 @@ function pct(n){ return (Number(n)||0).toFixed(1) + '%'; }
 function parseNum(v){ return Number(String(v).replace(/[^0-9.\-]/g,'')) || 0; }
 
 /* ---------- state ---------- */
-let STATE = { pedidos:[], compras:[], egresos:[], tab:'dashboard', loaded:false };
+const DEFAULT_TEMPLATE = '¡Hola {cliente}! 👋 Tu pedido de {producto} ya salió con {transportadora} 📦. Tu número de guía es: {guia} — ahí puedes rastrearlo. ¡Gracias por confiar en Ventura! 💕';
+let STATE = { pedidos:[], compras:[], egresos:[], config:{mensajeTemplate: DEFAULT_TEMPLATE}, tab:'dashboard', loaded:false };
 
 const ESTADOS = ['Pendiente','Confirmado','En tránsito','Entregado','Devuelto','Cancelado'];
 function estadoClass(e){
   const m = {'Entregado':'entregado','En tránsito':'transito','Confirmado':'confirmado','Pendiente':'pendiente','Devuelto':'devuelto','Cancelado':'cancelado'};
   return m[e] || 'pendiente';
 }
+function formatPhoneEC(raw){
+  let d = String(raw||'').replace(/[^0-9]/g,'');
+  if(!d) return '';
+  if(d.startsWith('0')) d = d.slice(1);
+  if(!d.startsWith('593')) d = '593' + d;
+  return d;
+}
+function buildMensaje(template, p){
+  return template
+    .replace(/{cliente}/g, p.cliente || 'cliente')
+    .replace(/{producto}/g, p.producto || 'tu producto')
+    .replace(/{transportadora}/g, p.transportadora || 'la transportadora')
+    .replace(/{guia}/g, p.guia || 'sin número');
+}
 
 /* ---------- boot ---------- */
 async function boot(){
   if(!getApiUrl()){ renderSetup(); return; }
-  const [p,c,e] = await Promise.all([loadList(KEYS.pedidos), loadList(KEYS.compras), loadList(KEYS.egresos)]);
-  STATE.pedidos = p; STATE.compras = c; STATE.egresos = e; STATE.loaded = true;
+  const [p,c,e,cfg] = await Promise.all([
+    loadList(KEYS.pedidos), loadList(KEYS.compras), loadList(KEYS.egresos),
+    loadRaw(KEYS.config, {mensajeTemplate: DEFAULT_TEMPLATE})
+  ]);
+  STATE.pedidos = p; STATE.compras = c; STATE.egresos = e;
+  STATE.config = (cfg && cfg.mensajeTemplate) ? cfg : {mensajeTemplate: DEFAULT_TEMPLATE};
+  STATE.loaded = true;
   renderNav(); renderMain();
 }
 
@@ -229,6 +253,7 @@ function renderSetup(){
 const NAV = [
   {id:'dashboard', label:'Dashboard'},
   {id:'pedidos', label:'Pedidos'},
+  {id:'seguimiento', label:'Seguimiento'},
   {id:'costos', label:'Costos y proveedores'},
   {id:'finanzas', label:'Finanzas'},
   {id:'calculadora', label:'Calculadora de rentabilidad'},
@@ -261,7 +286,7 @@ function renderMain(){
   const main = document.getElementById('main');
   if(!STATE.loaded){ main.innerHTML = '<p style="color:var(--muted)">Cargando datos...</p>'; return; }
   const renderers = {
-    dashboard: renderDashboard, pedidos: renderPedidos, costos: renderCostos,
+    dashboard: renderDashboard, pedidos: renderPedidos, seguimiento: renderSeguimiento, costos: renderCostos,
     finanzas: renderFinanzas, calculadora: renderCalculadora, campanas: renderCampanas
   };
   main.innerHTML = '';
@@ -543,6 +568,133 @@ function parseCSV(text){
   }
   if(field.length || row.length){ row.push(field); rows.push(row); }
   return rows.filter(r=>r.length>1 || (r[0]&&r[0].trim()));
+}
+
+/* ================= SEGUIMIENTO ================= */
+async function marcarEnviado(pedidoId, enviado){
+  const p = STATE.pedidos.find(x=>x.id===pedidoId);
+  if(!p) return;
+  p.seguimientoEnviado = enviado;
+  p.seguimientoFecha = enviado ? new Date().toLocaleString('es-EC') : '';
+  await saveList(KEYS.pedidos, STATE.pedidos);
+  renderMain();
+}
+
+function renderSeguimiento(){
+  const main = document.getElementById('main');
+  main.appendChild(head('Seguimiento de pedidos', 'De "pedido subido a Dropi" a "guía enviada por WhatsApp".'));
+
+  const pendientesGuia = STATE.pedidos.filter(p=>p.estado==='Pendiente');
+  const listosEnviar = STATE.pedidos.filter(p=>p.estado!=='Pendiente' && p.guia && !p.seguimientoEnviado);
+  const yaEnviados = STATE.pedidos.filter(p=>p.seguimientoEnviado);
+
+  const kpis = document.createElement('div'); kpis.className='kpi-grid';
+  kpis.innerHTML = `
+    <div class="kpi"><div class="label">Esperando guía en Dropi</div><div class="value">${pendientesGuia.length}</div>
+      <div class="sub">Subidos anoche, aún en "Pendiente"</div></div>
+    <div class="kpi"><div class="label">Listos para enviar seguimiento</div><div class="value ${listosEnviar.length?'neg':'pos'}">${listosEnviar.length}</div>
+      <div class="sub">Ya tienen guía, falta avisar al cliente</div></div>
+    <div class="kpi"><div class="label">Seguimientos enviados</div><div class="value pos">${yaEnviados.length}</div></div>
+  `;
+  main.appendChild(kpis);
+
+  // Plantilla del mensaje
+  const tplPanel = document.createElement('div'); tplPanel.className='panel';
+  tplPanel.innerHTML = `<h2>Mensaje de seguimiento</h2>
+    <p class="hint">Usa {cliente}, {producto}, {transportadora} y {guia} — se rellenan solos por cada pedido.</p>`;
+  const tplArea = document.createElement('textarea');
+  tplArea.id = 'tpl_area';
+  tplArea.style = 'width:100%; min-height:70px; background:var(--bg-panel); border:1px solid var(--line); color:var(--ink); border-radius:7px; padding:10px; font-size:13px; font-family:inherit;';
+  tplArea.value = STATE.config.mensajeTemplate || DEFAULT_TEMPLATE;
+  tplPanel.appendChild(tplArea);
+  const tplRow = document.createElement('div'); tplRow.style.marginTop='8px';
+  const tplBtn = document.createElement('button'); tplBtn.className='btn btn-ghost btn-sm'; tplBtn.textContent='Guardar plantilla';
+  const tplStatus = document.createElement('span'); tplStatus.style.marginLeft='10px'; tplStatus.style.fontSize='12px';
+  tplBtn.onclick = async ()=>{
+    STATE.config.mensajeTemplate = tplArea.value;
+    const ok = await saveRaw(KEYS.config, STATE.config);
+    tplStatus.textContent = ok ? 'Guardada.' : 'No se pudo guardar.';
+    tplStatus.style.color = ok ? 'var(--green)' : 'var(--red)';
+  };
+  tplRow.appendChild(tplBtn); tplRow.appendChild(tplStatus);
+  tplPanel.appendChild(tplRow);
+  main.appendChild(tplPanel);
+
+  // Esperando guía
+  const panel1 = document.createElement('div'); panel1.className='panel';
+  panel1.innerHTML = `<h2>Esperando guía (${pendientesGuia.length})</h2>
+    <p class="hint">Pedidos subidos a Dropi anoche que todavía no cambian a "Confirmado" / guía generada. Revisa Dropi si alguno lleva más de un día aquí.</p>`;
+  const wrap1 = document.createElement('div'); wrap1.className='table-wrap';
+  if(pendientesGuia.length===0){
+    wrap1.innerHTML = `<div class="empty">No hay pedidos esperando guía en este momento.</div>`;
+  } else {
+    let rows='';
+    pendientesGuia.slice().reverse().forEach(p=>{
+      rows += `<tr><td>${p.fecha||'—'}</td><td>${p.cliente||'—'}</td><td>${p.producto||'—'}</td><td>${p.telefono||'—'}</td></tr>`;
+    });
+    wrap1.innerHTML = `<table><thead><tr><th>Fecha subida</th><th>Cliente</th><th>Producto</th><th>Teléfono</th></tr></thead><tbody>${rows}</tbody></table>`;
+  }
+  panel1.appendChild(wrap1);
+  main.appendChild(panel1);
+
+  // Listos para enviar
+  const panel2 = document.createElement('div'); panel2.className='panel';
+  panel2.innerHTML = `<h2>Listos para enviar seguimiento (${listosEnviar.length})</h2>
+    <p class="hint">Ya tienen guía generada por Dropi. Un clic abre WhatsApp con el mensaje listo y marca el pedido como atendido.</p>`;
+  const wrap2 = document.createElement('div'); wrap2.className='table-wrap';
+  if(listosEnviar.length===0){
+    wrap2.innerHTML = `<div class="empty">No hay pendientes por enviar — todo al día 🎉</div>`;
+  } else {
+    let rows='';
+    listosEnviar.slice().reverse().forEach(p=>{
+      rows += `<tr>
+        <td>${p.cliente||'—'}</td><td>${p.telefono||'—'}</td><td>${p.producto||'—'}</td>
+        <td>${p.transportadora||'—'}</td><td>${p.guia||'—'}</td>
+        <td><span class="pill ${estadoClass(p.estado)}">${p.estado}</span></td>
+        <td><button class="btn btn-primary btn-sm" data-send="${p.id}">Enviar seguimiento →</button></td>
+      </tr>`;
+    });
+    wrap2.innerHTML = `<table><thead><tr><th>Cliente</th><th>Teléfono</th><th>Producto</th><th>Transportadora</th><th>Guía</th><th>Estado</th><th></th></tr></thead><tbody>${rows}</tbody></table>`;
+  }
+  panel2.appendChild(wrap2);
+  main.appendChild(panel2);
+
+  setTimeout(()=>{
+    document.querySelectorAll('[data-send]').forEach(btn=>{
+      btn.onclick = async ()=>{
+        const p = STATE.pedidos.find(x=>x.id===btn.dataset.send);
+        if(!p) return;
+        if(!p.telefono){ alert('Este pedido no tiene teléfono registrado — agrégalo en Pedidos antes de enviar.'); return; }
+        const tel = formatPhoneEC(p.telefono);
+        const mensaje = buildMensaje(STATE.config.mensajeTemplate || DEFAULT_TEMPLATE, p);
+        window.open('https://wa.me/' + tel + '?text=' + encodeURIComponent(mensaje), '_blank');
+        await marcarEnviado(p.id, true);
+      };
+    });
+  },0);
+
+  // Ya enviados (historial)
+  const panel3 = document.createElement('div'); panel3.className='panel';
+  panel3.innerHTML = `<h2>Historial de seguimientos enviados (${yaEnviados.length})</h2>`;
+  const wrap3 = document.createElement('div'); wrap3.className='table-wrap';
+  if(yaEnviados.length===0){
+    wrap3.innerHTML = `<div class="empty">Todavía no se ha enviado ningún seguimiento.</div>`;
+  } else {
+    let rows='';
+    yaEnviados.slice().reverse().slice(0,50).forEach(p=>{
+      rows += `<tr><td>${p.seguimientoFecha||'—'}</td><td>${p.cliente||'—'}</td><td>${p.producto||'—'}</td><td>${p.guia||'—'}</td>
+        <td><button class="btn btn-ghost btn-sm" data-undo="${p.id}">Deshacer</button></td></tr>`;
+    });
+    wrap3.innerHTML = `<table><thead><tr><th>Enviado</th><th>Cliente</th><th>Producto</th><th>Guía</th><th></th></tr></thead><tbody>${rows}</tbody></table>`;
+  }
+  panel3.appendChild(wrap3);
+  main.appendChild(panel3);
+
+  setTimeout(()=>{
+    document.querySelectorAll('[data-undo]').forEach(btn=>{
+      btn.onclick = ()=> marcarEnviado(btn.dataset.undo, false);
+    });
+  },0);
 }
 
 /* ================= COSTOS Y PROVEEDORES ================= */
