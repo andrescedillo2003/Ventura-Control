@@ -225,6 +225,7 @@
   <div id="main"></div>
 </div>
 
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script>
 /* ---------- datos: provincias y cantones de Ecuador ---------- */
 const PROVINCIAS_ECUADOR = {
@@ -359,6 +360,7 @@ function renderSetup(){
 
 const NAV = [
   {id:'dashboard', label:'Dashboard'},
+  {id:'estadisticas', label:'Estadísticas'},
   {id:'pedidos', label:'Pedidos'},
   {id:'seguimiento', label:'Seguimiento'},
   {id:'productos', label:'Productos'},
@@ -394,7 +396,7 @@ function renderMain(){
   const main = document.getElementById('main');
   if(!STATE.loaded){ main.innerHTML = '<p style="color:var(--muted)">Cargando datos...</p>'; return; }
   const renderers = {
-    dashboard: renderDashboard, pedidos: renderPedidos, seguimiento: renderSeguimiento, productos: renderProductos, costos: renderCostos,
+    dashboard: renderDashboard, estadisticas: renderEstadisticas, pedidos: renderPedidos, seguimiento: renderSeguimiento, productos: renderProductos, costos: renderCostos,
     finanzas: renderFinanzas, calculadora: renderCalculadora, campanas: renderCampanas
   };
   main.innerHTML = '';
@@ -671,6 +673,271 @@ function renderDashboard(){
   }
 }
 
+/* ================= ESTADÍSTICAS ================= */
+let estadState = { desde:'', hasta:'', estado:'', transportadora:'', tab:'resumen' };
+function ensureEstadRango(){
+  if(estadState.desde && estadState.hasta) return;
+  const hoy = new Date();
+  estadState.hasta = hoy.toISOString().slice(0,10);
+  const d = new Date(hoy); d.setDate(d.getDate()-30);
+  estadState.desde = d.toISOString().slice(0,10);
+}
+function donutSVG(pctVal, color, sub){
+  const r=40, c=2*Math.PI*r;
+  const p = Math.max(0, Math.min(100, pctVal||0));
+  const dash = (p/100)*c;
+  return `<svg width="104" height="104" viewBox="0 0 104 104">
+    <circle cx="52" cy="52" r="${r}" fill="none" stroke="var(--line)" stroke-width="9"/>
+    <circle cx="52" cy="52" r="${r}" fill="none" stroke="${color}" stroke-width="9"
+      stroke-dasharray="${dash.toFixed(1)} ${c.toFixed(1)}" stroke-linecap="round" transform="rotate(-90 52 52)"/>
+    <text x="52" y="57" text-anchor="middle" font-size="17" font-weight="700" fill="var(--ink)">${p.toFixed(1)}%</text>
+  </svg>`;
+}
+
+function renderEstadisticas(){
+  ensureEstadRango();
+  const main = document.getElementById('main');
+  main.appendChild(head('Estadísticas', 'Cómo se comportan tus pedidos, productos, confirmaciones y transportadoras.'));
+
+  const filterBar = document.createElement('div'); filterBar.className='filter-bar';
+  filterBar.innerHTML = `
+    <input type="date" id="es_desde" value="${estadState.desde}">
+    <span style="color:var(--muted)">→</span>
+    <input type="date" id="es_hasta" value="${estadState.hasta}">
+    <select id="es_estado"><option value="">Todos los estados</option>${ESTADOS.map(e=>`<option ${estadState.estado===e?'selected':''}>${e}</option>`).join('')}</select>
+    <select id="es_trans"><option value="">Todas las transportadoras</option>${TRANSPORTADORAS.map(t=>`<option ${estadState.transportadora===t?'selected':''}>${t}</option>`).join('')}</select>
+    <button class="btn btn-ghost btn-sm" id="es_buscar">Filtrar</button>
+  `;
+  main.appendChild(filterBar);
+  setTimeout(()=>{
+    document.getElementById('es_buscar').onclick = ()=>{
+      estadState.desde = document.getElementById('es_desde').value || estadState.desde;
+      estadState.hasta = document.getElementById('es_hasta').value || estadState.hasta;
+      estadState.estado = document.getElementById('es_estado').value;
+      estadState.transportadora = document.getElementById('es_trans').value;
+      renderMain();
+    };
+  },0);
+
+  let pedidos = STATE.pedidos.filter(p=> !p.fecha || (p.fecha>=estadState.desde && p.fecha<=estadState.hasta));
+  if(estadState.estado) pedidos = pedidos.filter(p=>p.estado===estadState.estado);
+  if(estadState.transportadora) pedidos = pedidos.filter(p=>p.transportadora===estadState.transportadora);
+  const m = computeMetrics(pedidos, STATE.compras, STATE.egresos);
+  const hoyStr = new Date().toISOString().slice(0,10);
+  const pedidosHoy = STATE.pedidos.filter(p=>p.fecha===hoyStr);
+  const facturadoHoy = pedidosHoy.reduce((s,p)=>s+parseNum(p.precioVenta),0);
+  const noEntregados = pedidos.filter(p=>['Pendiente','Confirmado','En tránsito'].includes(p.estado)).length;
+
+  // Tabs
+  const tabs = document.createElement('div'); tabs.className='tabs';
+  [['resumen','Resumen'],['productos','Productos'],['confirmaciones','Confirmaciones'],['transportadoras','Transportadoras']].forEach(([id,label])=>{
+    const b = document.createElement('button'); b.textContent=label; b.className = estadState.tab===id?'active':'';
+    b.onclick=()=>{ estadState.tab=id; renderMain(); };
+    tabs.appendChild(b);
+  });
+  main.appendChild(tabs);
+
+  if(estadState.tab==='resumen') renderEstadResumen(main, pedidos, m, pedidosHoy, facturadoHoy, noEntregados);
+  else if(estadState.tab==='productos') renderEstadProductos(main, pedidos);
+  else if(estadState.tab==='confirmaciones') renderEstadConfirmaciones(main, m);
+  else if(estadState.tab==='transportadoras') renderEstadTransportadoras(main, pedidos);
+}
+
+function renderEstadResumen(main, pedidos, m, pedidosHoy, facturadoHoy, noEntregados){
+  const kpis1 = document.createElement('div'); kpis1.className='kpi-grid';
+  kpis1.innerHTML = `
+    <div class="kpi"><div class="kpi-icon c-purple">🛒</div><div class="label">Pedidos hoy</div><div class="value">${pedidosHoy.length}</div></div>
+    <div class="kpi"><div class="kpi-icon c-blue">📈</div><div class="label">Total pedidos hoy</div><div class="value">${money(facturadoHoy)}</div></div>
+    <div class="kpi"><div class="kpi-icon c-green">$</div><div class="label">Facturado hoy</div><div class="value">${money(facturadoHoy)}</div></div>
+    <div class="kpi"><div class="kpi-icon c-purple">◔</div><div class="label">Facturado total</div><div class="value">${money(m.facturacionTotal)}</div></div>
+  `;
+  main.appendChild(kpis1);
+  const kpis2 = document.createElement('div'); kpis2.className='kpi-grid';
+  kpis2.innerHTML = `
+    <div class="kpi"><div class="kpi-icon c-blue">🚚</div><div class="label">Facturación en tránsito</div><div class="value">${money(m.facturacionTransito)}</div></div>
+    <div class="kpi"><div class="kpi-icon c-amber">⚠️</div><div class="label">Facturación en novedad</div><div class="value">${money(m.facturacionNovedad)}</div></div>
+    <div class="kpi"><div class="kpi-icon c-red">📦</div><div class="label">Productos NO entregados</div><div class="value">${noEntregados}</div></div>
+    <div class="kpi"><div class="kpi-icon c-gold">$</div><div class="label">Utilidad estimada</div><div class="value ${m.utilidadNeta>=0?'pos':'neg'}">${money(m.utilidadNeta)}</div></div>
+  `;
+  main.appendChild(kpis2);
+
+  // Barra resumen morada
+  const bar = document.createElement('div'); bar.className='panel'; bar.style.background='var(--rose-dim)';
+  bar.innerHTML = `<div style="display:grid; grid-template-columns:repeat(4,1fr); gap:14px;">
+    <div><div class="mlabel" style="text-transform:uppercase; font-size:10.5px; color:var(--muted-2)">Total órdenes</div><div style="font-size:22px; font-weight:700">${m.total}</div></div>
+    <div><div class="mlabel" style="text-transform:uppercase; font-size:10.5px; color:var(--muted-2)">Despachos (confirmados)</div><div style="font-size:22px; font-weight:700">${m.despachados}</div><div class="stnote">${pct(m.pctConfirmacion)} confirmación</div></div>
+    <div><div class="mlabel" style="text-transform:uppercase; font-size:10.5px; color:var(--muted-2)">Devoluciones</div><div style="font-size:22px; font-weight:700">${m.devueltos}</div><div class="stnote">${pct(m.total? m.devueltos/m.total*100:0)} de confirmados</div></div>
+    <div><div class="mlabel" style="text-transform:uppercase; font-size:10.5px; color:var(--muted-2)">Facturación</div><div style="font-size:22px; font-weight:700; color:var(--gold)">${money(m.facturacionTotal)}</div><div class="stnote">Confirmada: ${money(m.facturacionEntregada)}</div></div>
+  </div>`;
+  main.appendChild(bar);
+
+  // Donuts
+  const donutPanel = document.createElement('div'); donutPanel.className='panel';
+  const despachoPct = m.confirmados ? (m.despachados/m.confirmados*100) : 0;
+  const entregaPct = m.despachados ? (m.entregadosN/m.despachados*100) : 0;
+  const devolucionPct = m.entregadosN ? (m.devueltos/(m.entregadosN+m.devueltos)*100) : 0;
+  const donutGrid = document.createElement('div'); donutGrid.style.display='grid'; donutGrid.style.gridTemplateColumns='repeat(4,1fr)'; donutGrid.style.gap='14px'; donutGrid.style.textAlign='center';
+  donutGrid.innerHTML = `
+    <div><div class="section-label" style="margin:0 0 10px">Confirmación</div>${donutSVG(m.pctConfirmacion,'var(--blue)')}<div class="stnote">${m.confirmados} de ${m.total} gestionables</div></div>
+    <div><div class="section-label" style="margin:0 0 10px">Despacho</div>${donutSVG(despachoPct,'var(--green)')}<div class="stnote">${m.despachados} de ${m.confirmados} confirmados</div></div>
+    <div><div class="section-label" style="margin:0 0 10px">Entrega</div>${donutSVG(entregaPct,'var(--amber)')}<div class="stnote">${m.entregadosN} de ${m.despachados} cerrados</div></div>
+    <div><div class="section-label" style="margin:0 0 10px">Devolución</div>${donutSVG(devolucionPct,'var(--red)')}<div class="stnote">${m.devueltos} de ${m.entregadosN+m.devueltos} cerrados</div></div>
+  `;
+  donutPanel.appendChild(donutGrid);
+  main.appendChild(donutPanel);
+
+  // Tendencia diaria
+  const dates = dateRangeArray(estadState.desde, estadState.hasta);
+  const trendPanel = document.createElement('div'); trendPanel.className='panel';
+  trendPanel.innerHTML = `<div class="section-label" style="margin-top:0">Tendencia diaria</div><h2>Pedidos · confirmados · entregados</h2>`;
+  if(dates.length>1 && dates.length<=180){
+    const sE = bucketByDate(pedidos, dates, ()=>true);
+    const sC = bucketByDate(pedidos, dates, p=>['Confirmado','En tránsito','Entregado'].includes(p.estado));
+    const sG = bucketByDate(pedidos, dates, p=>p.estado==='Entregado');
+    trendPanel.innerHTML += lineChartSVG(dates, [{color:'var(--purple)',data:sE},{color:'var(--blue)',data:sC},{color:'var(--green)',data:sG}]);
+    trendPanel.innerHTML += `<div class="legend-row">
+      <span><span class="ldot" style="background:var(--purple)"></span>Pedidos entrantes</span>
+      <span><span class="ldot" style="background:var(--blue)"></span>Confirmados</span>
+      <span><span class="ldot" style="background:var(--green)"></span>Entregados</span></div>`;
+  } else {
+    trendPanel.innerHTML += `<p class="note">Elige un rango más corto para ver la gráfica.</p>`;
+  }
+  main.appendChild(trendPanel);
+
+  // Facturación diaria
+  const factPanel = document.createElement('div'); factPanel.className='panel';
+  factPanel.innerHTML = `<div class="section-label" style="margin-top:0">Facturación diaria</div><h2>Pedidos · confirmados · entregados ($)</h2>`;
+  if(dates.length>1 && dates.length<=180){
+    const sFP = bucketSumByDate(pedidos, dates, ()=>true, 'precioVenta');
+    const sFC = bucketSumByDate(pedidos, dates, p=>['Confirmado','En tránsito','Entregado'].includes(p.estado), 'precioVenta');
+    const sFG = bucketSumByDate(pedidos, dates, p=>p.estado==='Entregado', 'precioVenta');
+    factPanel.innerHTML += lineChartSVG(dates, [{color:'var(--purple)',data:sFP},{color:'var(--blue)',data:sFC},{color:'var(--green)',data:sFG}]);
+    factPanel.innerHTML += `<div class="legend-row">
+      <span><span class="ldot" style="background:var(--purple)"></span>Fact. pedidos</span>
+      <span><span class="ldot" style="background:var(--blue)"></span>Fact. confirmados</span>
+      <span><span class="ldot" style="background:var(--green)"></span>Fact. entregados</span></div>`;
+  } else {
+    factPanel.innerHTML += `<p class="note">Elige un rango más corto para ver la gráfica.</p>`;
+  }
+  main.appendChild(factPanel);
+
+  // Embudo del período (cajas con flechas)
+  const embPanel = document.createElement('div'); embPanel.className='panel';
+  embPanel.innerHTML = `<div class="section-label" style="margin-top:0">Informe general</div><h2>Embudo del período</h2>`;
+  const stagesRow = document.createElement('div'); stagesRow.style.display='flex'; stagesRow.style.alignItems='center'; stagesRow.style.gap='6px'; stagesRow.style.margin='14px 0';
+  const stageDefs = [['Entrantes',m.total],['Confirmados',m.confirmados],['Despachados',m.despachados],['Entregados',m.entregadosN]];
+  stageDefs.forEach(([label,val],i)=>{
+    const box = document.createElement('div');
+    box.style.cssText='flex:1; background:var(--bg-panel); border:1px solid var(--line); border-radius:8px; padding:14px; text-align:center;';
+    const prevVal = i>0 ? stageDefs[i-1][1] : null;
+    const dropPct = prevVal ? pct(prevVal? (val/prevVal*100):0) : '';
+    box.innerHTML = `<div style="font-size:20px; font-weight:700">${val}</div><div class="mlabel" style="margin-top:4px">${label.toUpperCase()}</div>`;
+    stagesRow.appendChild(box);
+    if(i<stageDefs.length-1){
+      const arrow = document.createElement('div');
+      arrow.style.cssText='color:var(--muted-2); font-size:12px; text-align:center; width:36px;';
+      const nextVal = stageDefs[i+1][1];
+      arrow.innerHTML = `›<br><span style="font-size:10.5px">${pct(val? nextVal/val*100:0)}</span>`;
+      stagesRow.appendChild(arrow);
+    }
+  });
+  embPanel.appendChild(stagesRow);
+  const embFoot = document.createElement('div'); embFoot.className='metric-grid';
+  const noConfirmables = m.total - m.confirmados;
+  embFoot.innerHTML = `
+    <div class="metric-box"><div class="mlabel">Ticket promedio</div><div class="mvalue">${money(m.ticketMedio)}</div></div>
+    <div class="metric-box"><div class="mlabel">Unid. / pedido</div><div class="mvalue">${m.total? (pedidos.reduce((s,p)=>s+parseNum(p.cantidad),0)/m.total).toFixed(2) : '0.00'}</div></div>
+    <div class="metric-box"><div class="mlabel">No confirmables</div><div class="mvalue">${noConfirmables} <span style="font-size:11px;color:var(--muted)">(${pct(m.total?noConfirmables/m.total*100:0)})</span></div></div>
+    <div class="metric-box"><div class="mlabel">Carritos abandonados</div><div class="mvalue" style="color:var(--muted)">No aplica</div></div>
+  `;
+  embPanel.appendChild(embFoot);
+  main.appendChild(embPanel);
+
+  // Estados de las órdenes
+  const estPanel = document.createElement('div'); estPanel.className='panel';
+  estPanel.innerHTML = `<h2>Estados de las órdenes</h2>`;
+  if(pedidos.length===0){
+    estPanel.innerHTML += `<p class="hint">No hay pedidos en el período elegido.</p>`;
+  } else {
+    let rows='';
+    ESTADOS.forEach(es=>{
+      const n = pedidos.filter(p=>p.estado===es).length;
+      if(n===0) return;
+      rows += `<tr><td><span class="pill ${estadoClass(es)}">${es}</span></td><td style="text-align:right">${n}</td></tr>`;
+    });
+    estPanel.innerHTML += `<table><tbody>${rows}</tbody></table>`;
+  }
+  main.appendChild(estPanel);
+}
+
+function renderEstadProductos(main, pedidos){
+  const panel = document.createElement('div'); panel.className='panel';
+  panel.innerHTML = `<h2>Rendimiento por producto</h2>`;
+  const nombres = [...new Set(pedidos.map(p=>p.producto).filter(Boolean))];
+  const wrap = document.createElement('div'); wrap.className='table-wrap';
+  if(nombres.length===0){
+    wrap.innerHTML = `<div class="empty">No hay pedidos con producto asignado en este período.</div>`;
+  } else {
+    let rows='';
+    nombres.map(nombre=>{
+      const ped = pedidos.filter(p=>p.producto===nombre);
+      const entregados = ped.filter(p=>p.estado==='Entregado');
+      const vendidos = ped.reduce((s,p)=>s+parseNum(p.cantidad),0);
+      const facturacion = ped.reduce((s,p)=>s+parseNum(p.precioVenta),0);
+      const ganancia = entregados.reduce((s,p)=>s+(parseNum(p.precioVenta)-parseNum(p.costoProducto)-parseNum(p.costoEnvio)),0);
+      return {nombre, vendidos, facturacion, entregadosN:entregados.length, ganancia};
+    }).sort((a,b)=>b.facturacion-a.facturacion).forEach(r=>{
+      rows += `<tr><td>${r.nombre}</td><td>${r.vendidos}</td><td>${r.entregadosN}</td><td>${money(r.facturacion)}</td>
+        <td style="color:${r.ganancia>=0?'var(--green)':'var(--red)'}">${money(r.ganancia)}</td></tr>`;
+    });
+    wrap.innerHTML = `<table><thead><tr><th>Producto</th><th>Unidades pedidas</th><th>Entregados</th><th>Facturación</th><th>Ganancia estimada</th></tr></thead><tbody>${rows}</tbody></table>`;
+  }
+  panel.appendChild(wrap);
+  main.appendChild(panel);
+}
+
+function renderEstadConfirmaciones(main, m){
+  const panel = document.createElement('div'); panel.className='panel';
+  panel.innerHTML = `<h2>Confirmaciones</h2><p class="hint">Qué tan bien avanzan tus pedidos de una etapa a la siguiente.</p>`;
+  const despachoPct = m.confirmados ? (m.despachados/m.confirmados*100) : 0;
+  const entregaPct = m.despachados ? (m.entregadosN/m.despachados*100) : 0;
+  const devolucionPct = m.entregadosN ? (m.devueltos/(m.entregadosN+m.devueltos)*100) : 0;
+  const grid = document.createElement('div'); grid.style.display='grid'; grid.style.gridTemplateColumns='repeat(4,1fr)'; grid.style.gap='14px'; grid.style.textAlign='center';
+  grid.innerHTML = `
+    <div><div class="section-label" style="margin:0 0 10px">Confirmación</div>${donutSVG(m.pctConfirmacion,'var(--blue)')}<div class="stnote">${m.confirmados} de ${m.total} gestionables</div></div>
+    <div><div class="section-label" style="margin:0 0 10px">Despacho</div>${donutSVG(despachoPct,'var(--green)')}<div class="stnote">${m.despachados} de ${m.confirmados} confirmados</div></div>
+    <div><div class="section-label" style="margin:0 0 10px">Entrega</div>${donutSVG(entregaPct,'var(--amber)')}<div class="stnote">${m.entregadosN} de ${m.despachados} cerrados</div></div>
+    <div><div class="section-label" style="margin:0 0 10px">Devolución</div>${donutSVG(devolucionPct,'var(--red)')}<div class="stnote">${m.devueltos} de ${m.entregadosN+m.devueltos} cerrados</div></div>
+  `;
+  panel.appendChild(grid);
+  main.appendChild(panel);
+}
+
+function renderEstadTransportadoras(main, pedidos){
+  const panel = document.createElement('div'); panel.className='panel';
+  panel.innerHTML = `<h2>Rendimiento por transportadora</h2>`;
+  const wrap = document.createElement('div'); wrap.className='table-wrap';
+  const usadas = [...new Set(pedidos.map(p=>p.transportadora).filter(Boolean))];
+  if(usadas.length===0){
+    wrap.innerHTML = `<div class="empty">No hay pedidos con transportadora asignada en este período.</div>`;
+  } else {
+    let rows='';
+    usadas.map(t=>{
+      const ped = pedidos.filter(p=>p.transportadora===t);
+      const entregados = ped.filter(p=>p.estado==='Entregado').length;
+      const devueltos = ped.filter(p=>p.estado==='Devuelto').length;
+      const facturacion = ped.filter(p=>p.estado==='Entregado').reduce((s,p)=>s+parseNum(p.precioVenta),0);
+      return {t, total:ped.length, entregados, devueltos, facturacion, pctEntrega: ped.length? entregados/ped.length*100:0};
+    }).sort((a,b)=>b.total-a.total).forEach(r=>{
+      rows += `<tr><td>${r.t}</td><td>${r.total}</td><td>${r.entregados}</td><td>${r.devueltos}</td>
+        <td>${pct(r.pctEntrega)}</td><td>${money(r.facturacion)}</td></tr>`;
+    });
+    wrap.innerHTML = `<table><thead><tr><th>Transportadora</th><th>Pedidos</th><th>Entregados</th><th>Devueltos</th><th>% Entrega</th><th>Facturación entregada</th></tr></thead><tbody>${rows}</tbody></table>`;
+  }
+  panel.appendChild(wrap);
+  main.appendChild(panel);
+}
+
 /* ================= PEDIDOS ================= */
 let pedidoFilters = { estado:'', transportadora:'' };
 
@@ -772,53 +1039,69 @@ function renderPedidos(){
     }
   },0);
 
-  // Import CSV
+  // Import XLSX / CSV
   const importPanel = document.createElement('div'); importPanel.className='panel';
-  importPanel.innerHTML = `<h2>Importar pedidos (CSV / Excel exportado)</h2>
-    <p class="hint">Columnas esperadas: tracking, estado, transportadora, envio, productos, ud, precio, nombre, direccion, ciudad, telefono, email — como el "Resumen Excel" de Rocket/Dropi. Guarda tu Excel como CSV antes de subir.</p>`;
-  const fileInput = document.createElement('input'); fileInput.type='file'; fileInput.accept='.csv,text/csv';
+  importPanel.innerHTML = `<h2>Importar pedidos (Excel .xlsx o .csv)</h2>
+    <p class="hint">Sube directamente el Excel que exportas de Dropi/Rocket (.xlsx) — ya no hace falta convertirlo a CSV. Columnas esperadas: guía/tracking, estado, transportadora, envío, producto, unidades, precio, nombre, dirección, ciudad, teléfono, email.</p>`;
+  const fileInput = document.createElement('input'); fileInput.type='file'; fileInput.accept='.xlsx,.xls,.csv,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel';
   const importStatus = document.createElement('div'); importStatus.className='note';
+
+  async function processImportedRows(rows){
+    if(!rows || rows.length < 2){ importStatus.textContent = 'El archivo no tiene filas de datos.'; importStatus.style.color='var(--red)'; return; }
+    const headerRow = rows[0].map(h=>String(h||'').trim().toLowerCase());
+    const idx = (name)=>headerRow.findIndex(h=>h.includes(name));
+    const iTracking=idx('track')>-1?idx('track'):idx('guía')>-1?idx('guía'):idx('guia'),
+      iEstado=idx('estado'), iTrans=idx('transport'),
+      iEnvio=idx('env'), iProd=idx('product'), iUd=idx('ud'), iPrecio=idx('precio'),
+      iNombre=idx('nombre'), iDir=idx('direcc'), iCiudad=idx('ciudad'),
+      iTel=idx('tel'), iEmail=idx('email');
+    let added = 0;
+    for(let r=1; r<rows.length; r++){
+      const row = rows[r];
+      if(!row || row.every(c=>c===undefined || c===null || String(c).trim()==='')) continue;
+      const val = (i)=> i>-1 && row[i]!==undefined && row[i]!==null ? String(row[i]).trim() : '';
+      STATE.pedidos.push({
+        id: uid(),
+        fecha: '',
+        cliente: val(iNombre),
+        telefono: val(iTel),
+        ciudad: val(iCiudad),
+        producto: val(iProd),
+        cantidad: val(iUd),
+        precioVenta: val(iPrecio),
+        costoProducto: '', costoEnvio: val(iEnvio),
+        transportadora: val(iTrans),
+        guia: val(iTracking),
+        estado: (iEstado>-1 && ESTADOS.includes(val(iEstado))) ? val(iEstado) : 'Pendiente',
+        email: val(iEmail), direccion: val(iDir)
+      });
+      added++;
+    }
+    const ok = await saveList(KEYS.pedidos, STATE.pedidos);
+    importStatus.textContent = ok ? `Importados ${added} pedidos.` : 'Se leyó el archivo pero no se pudo guardar.';
+    importStatus.style.color = ok ? 'var(--green)' : 'var(--red)';
+    renderMain();
+  }
+
   fileInput.onchange = (ev)=>{
     const file = ev.target.files[0]; if(!file) return;
+    const isExcel = /\.xlsx?$/i.test(file.name);
     const reader = new FileReader();
     reader.onload = async (e)=>{
       try{
-        const rows = parseCSV(e.target.result);
-        if(rows.length < 2){ importStatus.textContent = 'El archivo no tiene filas de datos.'; return; }
-        const headerRow = rows[0].map(h=>h.trim().toLowerCase());
-        const idx = (name)=>headerRow.findIndex(h=>h.includes(name));
-        const iTracking=idx('track'), iEstado=idx('estado'), iTrans=idx('transport'),
-          iEnvio=idx('env'), iProd=idx('product'), iUd=idx('ud'), iPrecio=idx('precio'),
-          iNombre=idx('nombre'), iDir=idx('direcc'), iCiudad=idx('ciudad'),
-          iTel=idx('tel'), iEmail=idx('email');
-        let added = 0;
-        for(let r=1; r<rows.length; r++){
-          const row = rows[r];
-          if(!row || row.every(c=>!c || !c.trim())) continue;
-          STATE.pedidos.push({
-            id: uid(),
-            fecha: '',
-            cliente: iNombre>-1 ? row[iNombre] : '',
-            telefono: iTel>-1 ? row[iTel] : '',
-            ciudad: iCiudad>-1 ? row[iCiudad] : '',
-            producto: iProd>-1 ? row[iProd] : '',
-            cantidad: iUd>-1 ? row[iUd] : '',
-            precioVenta: iPrecio>-1 ? row[iPrecio] : '',
-            costoProducto: '', costoEnvio: iEnvio>-1 ? row[iEnvio] : '',
-            transportadora: iTrans>-1 ? row[iTrans] : '',
-            guia: iTracking>-1 ? row[iTracking] : '',
-            estado: (iEstado>-1 && ESTADOS.includes(row[iEstado])) ? row[iEstado] : 'Pendiente',
-            email: iEmail>-1 ? row[iEmail] : '', direccion: iDir>-1 ? row[iDir] : ''
-          });
-          added++;
+        let rows;
+        if(isExcel){
+          if(typeof XLSX === 'undefined'){ importStatus.textContent = 'No se pudo cargar el lector de Excel (revisa tu conexión) e inténtalo de nuevo.'; importStatus.style.color='var(--red)'; return; }
+          const wb = XLSX.read(e.target.result, {type:'array'});
+          const ws = wb.Sheets[wb.SheetNames[0]];
+          rows = XLSX.utils.sheet_to_json(ws, {header:1, raw:false, defval:''});
+        } else {
+          rows = parseCSV(e.target.result);
         }
-        const ok = await saveList(KEYS.pedidos, STATE.pedidos);
-        importStatus.textContent = ok ? `Importados ${added} pedidos.` : 'Se leyó el archivo pero no se pudo guardar.';
-        importStatus.style.color = ok ? 'var(--green)' : 'var(--red)';
-        renderMain();
+        await processImportedRows(rows);
       }catch(err){ importStatus.textContent = 'No se pudo leer el archivo: ' + err.message; importStatus.style.color='var(--red)'; }
     };
-    reader.readAsText(file);
+    if(isExcel) reader.readAsArrayBuffer(file); else reader.readAsText(file);
   };
   importPanel.appendChild(fileInput);
   importPanel.appendChild(importStatus);
