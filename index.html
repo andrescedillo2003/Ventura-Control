@@ -255,8 +255,66 @@ const PROVINCIAS_ECUADOR = {
   "Zamora Chinchipe": ["Centinela del Cóndor","Chinchipe","El Pangui","Nangaritza","Palanda","Paquisha","Yacuambi","Yantzaza","Zamora"]
 };
 const TRANSPORTADORAS = ["Servientrega","Laar Courier","Gintracom"];
+
+/* ---------- normalización de ciudad / teléfono / fecha para importaciones ---------- */
+const CIUDAD_ALIASES = {
+  'nueva loja':'Lago Agrio', 'puyo':'Pastaza', 'bahia de caraquez':'Sucre',
+  'cariamanga':'Calvas', 'sangolqui':'Rumiñahui', 'orellana':'Francisco de Orellana',
+  'santo domingo':'Santo Domingo de los Colorados', 'el coca':'Francisco de Orellana',
+  'las ventanas':'Ventanas', 'pangui':'El Pangui'
+};
+function stripAccents(s){ return String(s||'').normalize('NFD').replace(/[\u0300-\u036f]/g,''); }
+function normStr(s){ return stripAccents(s).toLowerCase().trim().replace(/\s+/g,' '); }
+let _cityIndex = null;
+function buildCityIndex(){
+  _cityIndex = {};
+  Object.keys(PROVINCIAS_ECUADOR).forEach(prov=>{
+    PROVINCIAS_ECUADOR[prov].forEach(city=>{
+      _cityIndex[normStr(city)] = {provincia:prov, ciudad:city};
+    });
+  });
+}
+function findProvinciaCiudad(rawCiudad){
+  if(!_cityIndex) buildCityIndex();
+  if(!rawCiudad) return {provincia:'', ciudad:''};
+  const n = normStr(rawCiudad);
+  if(_cityIndex[n]) return _cityIndex[n];
+  const aliasTarget = CIUDAD_ALIASES[n];
+  if(aliasTarget){
+    const n2 = normStr(aliasTarget);
+    if(_cityIndex[n2]) return _cityIndex[n2];
+  }
+  return {provincia:'', ciudad: String(rawCiudad).trim()};
+}
+function normalizePhoneRaw(raw){
+  if(raw===undefined || raw===null) return '';
+  let d = String(raw).replace(/\.0$/,'').replace(/[^0-9]/g,'');
+  if(!d) return '';
+  if(d.length===9) d = '0'+d;
+  return d;
+}
+function excelSerialToDate(n){
+  const utcDays = Math.floor(n - 25569);
+  const utcValue = utcDays*86400;
+  const d = new Date(utcValue*1000);
+  return d;
+}
+function parseAnyDate(val){
+  if(val===undefined || val===null || val==='') return '';
+  if(val instanceof Date && !isNaN(val)) return val.toISOString().slice(0,10);
+  if(typeof val === 'number'){ const d = excelSerialToDate(val); if(!isNaN(d)) return d.toISOString().slice(0,10); return ''; }
+  const s = String(val).trim();
+  let m = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
+  if(m) return `${m[1]}-${m[2].padStart(2,'0')}-${m[3].padStart(2,'0')}`;
+  m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+  if(m) return `${m[3]}-${m[2].padStart(2,'0')}-${m[1].padStart(2,'0')}`;
+  const d = new Date(s);
+  if(!isNaN(d)) return d.toISOString().slice(0,10);
+  return '';
+}
+
 /* ---------- storage helpers (Google Sheets vía Apps Script) ---------- */
-const KEYS = { pedidos:'ventura:pedidos', compras:'ventura:compras', egresos:'ventura:egresos', config:'ventura:config', productos:'ventura:productos' };
+const KEYS = { pedidos:'ventura:pedidos', compras:'ventura:compras', egresos:'ventura:egresos', config:'ventura:config', productos:'ventura:productos', envios:'ventura:envios' };
 const API_URL_KEY = 'venturaApiUrl';
 function getApiUrl(){ return localStorage.getItem(API_URL_KEY) || ''; }
 function setApiUrl(u){ localStorage.setItem(API_URL_KEY, u.trim()); }
@@ -297,7 +355,7 @@ function parseNum(v){ return Number(String(v).replace(/[^0-9.\-]/g,'')) || 0; }
 
 /* ---------- state ---------- */
 const DEFAULT_TEMPLATE = '¡Hola {cliente}! 👋 Tu pedido de {producto} ya salió con {transportadora} 📦. Tu número de guía es: {guia} — ahí puedes rastrearlo. ¡Gracias por confiar en Ventura! 💕';
-let STATE = { pedidos:[], compras:[], egresos:[], productos:[], config:{mensajeTemplate: DEFAULT_TEMPLATE}, tab:'dashboard', loaded:false };
+let STATE = { pedidos:[], compras:[], egresos:[], productos:[], envios:[], config:{mensajeTemplate: DEFAULT_TEMPLATE}, tab:'dashboard', loaded:false };
 
 const ESTADOS = ['Pendiente','Confirmado','En tránsito','Entregado','Devuelto','Cancelado'];
 function estadoClass(e){
@@ -322,11 +380,11 @@ function buildMensaje(template, p){
 /* ---------- boot ---------- */
 async function boot(){
   if(!getApiUrl()){ renderSetup(); return; }
-  const [p,c,e,cfg,prod] = await Promise.all([
+  const [p,c,e,cfg,prod,env] = await Promise.all([
     loadList(KEYS.pedidos), loadList(KEYS.compras), loadList(KEYS.egresos),
-    loadRaw(KEYS.config, {mensajeTemplate: DEFAULT_TEMPLATE}), loadList(KEYS.productos)
+    loadRaw(KEYS.config, {mensajeTemplate: DEFAULT_TEMPLATE}), loadList(KEYS.productos), loadList(KEYS.envios)
   ]);
-  STATE.pedidos = p; STATE.compras = c; STATE.egresos = e; STATE.productos = prod;
+  STATE.pedidos = p; STATE.compras = c; STATE.egresos = e; STATE.productos = prod; STATE.envios = env;
   STATE.config = (cfg && cfg.mensajeTemplate) ? cfg : {mensajeTemplate: DEFAULT_TEMPLATE};
   STATE.loaded = true;
   renderNav(); renderMain();
@@ -364,7 +422,7 @@ const NAV = [
   {id:'pedidos', label:'Pedidos'},
   {id:'seguimiento', label:'Seguimiento'},
   {id:'productos', label:'Productos'},
-  {id:'costos', label:'Costos y proveedores'},
+  {id:'envios', label:'Envíos por ciudad'},
   {id:'finanzas', label:'Finanzas'},
   {id:'calculadora', label:'Calculadora de rentabilidad'},
   {id:'campanas', label:'Campañas'},
@@ -396,7 +454,7 @@ function renderMain(){
   const main = document.getElementById('main');
   if(!STATE.loaded){ main.innerHTML = '<p style="color:var(--muted)">Cargando datos...</p>'; return; }
   const renderers = {
-    dashboard: renderDashboard, estadisticas: renderEstadisticas, pedidos: renderPedidos, seguimiento: renderSeguimiento, productos: renderProductos, costos: renderCostos,
+    dashboard: renderDashboard, estadisticas: renderEstadisticas, pedidos: renderPedidos, seguimiento: renderSeguimiento, productos: renderProductos, envios: renderEnvios,
     finanzas: renderFinanzas, calculadora: renderCalculadora, campanas: renderCampanas
   };
   main.innerHTML = '';
@@ -940,6 +998,16 @@ function renderEstadTransportadoras(main, pedidos){
 
 /* ================= PEDIDOS ================= */
 let pedidoFilters = { estado:'', transportadora:'' };
+let pedidoTab = 'todos';
+function pedidosForTab(tab){
+  switch(tab){
+    case 'confirmado': return STATE.pedidos.filter(p=>p.estado==='Confirmado');
+    case 'guia_generada': return STATE.pedidos.filter(p=>p.guia && !['Entregado','Devuelto','Cancelado'].includes(p.estado));
+    case 'entregado': return STATE.pedidos.filter(p=>p.estado==='Entregado');
+    case 'guia_enviada': return STATE.pedidos.filter(p=>p.seguimientoEnviado);
+    default: return STATE.pedidos;
+  }
+}
 
 function renderPedidos(){
   const main = document.getElementById('main');
@@ -1013,6 +1081,9 @@ function renderPedidos(){
     const ok = await saveList(KEYS.pedidos, STATE.pedidos);
     status.textContent = ok ? 'Guardado.' : 'No se pudo guardar.';
     status.style.color = ok ? 'var(--green)' : 'var(--red)';
+    if(ok && p.ciudad && p.transportadora && parseNum(p.costoEnvio)>0){
+      upsertEnvio(p.ciudad, p.transportadora, parseNum(p.costoEnvio));
+    }
     renderMain();
   };
   btnRow.appendChild(saveBtn); btnRow.appendChild(status);
@@ -1037,48 +1108,107 @@ function renderPedidos(){
         }
       };
     }
+    const autoEnvio = ()=>{
+      const ciudadVal = document.getElementById('pf_ciudad').value;
+      const transVal = document.getElementById('pf_transportadora').value;
+      const envioInput = document.getElementById('pf_costoEnvio');
+      if(!ciudadVal || envioInput.value) return;
+      const match = findEnvioCosto(ciudadVal, transVal);
+      if(match) envioInput.value = match.costo;
+    };
+    document.getElementById('pf_ciudad').addEventListener('change', autoEnvio);
+    document.getElementById('pf_transportadora').addEventListener('change', autoEnvio);
   },0);
 
   // Import XLSX / CSV
   const importPanel = document.createElement('div'); importPanel.className='panel';
   importPanel.innerHTML = `<h2>Importar pedidos (Excel .xlsx o .csv)</h2>
-    <p class="hint">Sube directamente el Excel que exportas de Dropi/Rocket (.xlsx) — ya no hace falta convertirlo a CSV. Columnas esperadas: guía/tracking, estado, transportadora, envío, producto, unidades, precio, nombre, dirección, ciudad, teléfono, email.</p>`;
+    <p class="hint">Sube directamente tu Excel de Dropi/Rocket o tu registro de seguimiento de anuncios (.xlsx) — reconoce ambos formatos solo. Se respeta la fecha real de cada fila, se detecta la provincia a partir de la ciudad, y si el producto ya existe en tu catálogo de "Productos" se autocompleta el precio y costo — si no lo reconoce, los deja en blanco para que tú los completes.</p>`;
   const fileInput = document.createElement('input'); fileInput.type='file'; fileInput.accept='.xlsx,.xls,.csv,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel';
   const importStatus = document.createElement('div'); importStatus.className='note';
 
   async function processImportedRows(rows){
     if(!rows || rows.length < 2){ importStatus.textContent = 'El archivo no tiene filas de datos.'; importStatus.style.color='var(--red)'; return; }
-    const headerRow = rows[0].map(h=>String(h||'').trim().toLowerCase());
+    let headerIdx = 0;
+    for(let i=0;i<Math.min(rows.length,5);i++){
+      const line = (rows[i]||[]).map(h=>normStr(h));
+      if(line.some(h=>h.includes('nombre')) || line.some(h=>h.includes('estado')) || line.some(h=>h.includes('track'))){ headerIdx = i; break; }
+    }
+    const headerRow = (rows[headerIdx]||[]).map(h=>normStr(h));
     const idx = (name)=>headerRow.findIndex(h=>h.includes(name));
-    const iTracking=idx('track')>-1?idx('track'):idx('guía')>-1?idx('guía'):idx('guia'),
-      iEstado=idx('estado'), iTrans=idx('transport'),
-      iEnvio=idx('env'), iProd=idx('product'), iUd=idx('ud'), iPrecio=idx('precio'),
-      iNombre=idx('nombre'), iDir=idx('direcc'), iCiudad=idx('ciudad'),
-      iTel=idx('tel'), iEmail=idx('email');
-    let added = 0;
-    for(let r=1; r<rows.length; r++){
-      const row = rows[r];
-      if(!row || row.every(c=>c===undefined || c===null || String(c).trim()==='')) continue;
-      const val = (i)=> i>-1 && row[i]!==undefined && row[i]!==null ? String(row[i]).trim() : '';
-      STATE.pedidos.push({
-        id: uid(),
-        fecha: '',
-        cliente: val(iNombre),
-        telefono: val(iTel),
-        ciudad: val(iCiudad),
-        producto: val(iProd),
-        cantidad: val(iUd),
-        precioVenta: val(iPrecio),
-        costoProducto: '', costoEnvio: val(iEnvio),
-        transportadora: val(iTrans),
-        guia: val(iTracking),
-        estado: (iEstado>-1 && ESTADOS.includes(val(iEstado))) ? val(iEstado) : 'Pendiente',
-        email: val(iEmail), direccion: val(iDir)
-      });
-      added++;
+    const isAnuncios = headerRow.some(h=>h.includes('fecha anuncio')) || headerRow.some(h=>h.includes('nombre cliente'));
+    let added = 0, autocompletados = 0;
+
+    if(isAnuncios){
+      const iFecha=idx('fecha anuncio'), iNombre=idx('nombre cliente'), iTel=idx('telefono'),
+        iCiudad=idx('ciudad'), iProd=idx('producto'), iOrigen=idx('origen'), iEstado=idx('estado de entrega');
+      for(let r=headerIdx+1; r<rows.length; r++){
+        const row = rows[r]; if(!row) continue;
+        const nombre = iNombre>-1 ? String(row[iNombre]||'').trim() : '';
+        if(!nombre) continue; // fila de ejemplo o vacía
+        const rawCiudad = iCiudad>-1 ? row[iCiudad] : '';
+        const {provincia, ciudad} = findProvinciaCiudad(rawCiudad);
+        const rawProducto = iProd>-1 ? String(row[iProd]||'').trim() : '';
+        let catalogo = rawProducto ? findProducto(rawProducto) : null;
+        if(!catalogo && rawProducto){
+          catalogo = STATE.productos.find(p=>{
+            const a = normStr(p.nombre), b = normStr(rawProducto);
+            return a===b || b.includes(a) || a.includes(b);
+          });
+        }
+        if(catalogo) autocompletados++;
+        const estadoRaw = iEstado>-1 ? String(row[iEstado]||'').trim() : '';
+        const estado = estadoRaw==='Cancelado' ? 'Cancelado' : 'Pendiente';
+        STATE.pedidos.push({
+          id: uid(),
+          fecha: iFecha>-1 ? parseAnyDate(row[iFecha]) : '',
+          cliente: nombre,
+          telefono: iTel>-1 ? normalizePhoneRaw(row[iTel]) : '',
+          provincia, ciudad,
+          producto: catalogo ? catalogo.nombre : rawProducto,
+          cantidad: 1,
+          precioVenta: catalogo ? catalogo.precioVenta : '',
+          costoProducto: catalogo ? catalogo.costoProducto : '',
+          costoEnvio: '', transportadora: '', guia: '', estado,
+          origen: iOrigen>-1 ? String(row[iOrigen]||'').trim() : '',
+          email:'', direccion:''
+        });
+        added++;
+      }
+    } else {
+      const iTracking=idx('track')>-1?idx('track'):idx('guia'),
+        iEstado=idx('estado'), iTrans=idx('transport'),
+        iEnvio=idx('env'), iProd=idx('product'), iUd=idx('ud'), iPrecio=idx('precio'),
+        iNombre=idx('nombre'), iDir=idx('direcc'), iCiudad=idx('ciudad'),
+        iTel=idx('tel'), iEmail=idx('email'), iFecha=idx('fecha');
+      for(let r=headerIdx+1; r<rows.length; r++){
+        const row = rows[r];
+        if(!row || row.every(c=>c===undefined || c===null || String(c).trim()==='')) continue;
+        const val = (i)=> i>-1 && row[i]!==undefined && row[i]!==null ? String(row[i]).trim() : '';
+        const rawCiudad = iCiudad>-1 ? row[iCiudad] : '';
+        const {provincia, ciudad} = findProvinciaCiudad(rawCiudad);
+        STATE.pedidos.push({
+          id: uid(),
+          fecha: iFecha>-1 ? parseAnyDate(row[iFecha]) : '',
+          cliente: val(iNombre),
+          telefono: iTel>-1 ? normalizePhoneRaw(row[iTel]) : '',
+          provincia, ciudad,
+          producto: val(iProd),
+          cantidad: val(iUd) || 1,
+          precioVenta: val(iPrecio),
+          costoProducto: '', costoEnvio: val(iEnvio),
+          transportadora: val(iTrans),
+          guia: val(iTracking),
+          estado: (iEstado>-1 && ESTADOS.includes(val(iEstado))) ? val(iEstado) : 'Pendiente',
+          email: val(iEmail), direccion: val(iDir)
+        });
+        added++;
+      }
     }
     const ok = await saveList(KEYS.pedidos, STATE.pedidos);
-    importStatus.textContent = ok ? `Importados ${added} pedidos.` : 'Se leyó el archivo pero no se pudo guardar.';
+    importStatus.textContent = ok
+      ? `Importados ${added} pedidos${autocompletados ? ` (${autocompletados} con precio/costo autocompletado desde tu catálogo de Productos)` : ''}.`
+      : 'Se leyó el archivo pero no se pudo guardar.';
     importStatus.style.color = ok ? 'var(--green)' : 'var(--red)';
     renderMain();
   }
@@ -1092,9 +1222,9 @@ function renderPedidos(){
         let rows;
         if(isExcel){
           if(typeof XLSX === 'undefined'){ importStatus.textContent = 'No se pudo cargar el lector de Excel (revisa tu conexión) e inténtalo de nuevo.'; importStatus.style.color='var(--red)'; return; }
-          const wb = XLSX.read(e.target.result, {type:'array'});
+          const wb = XLSX.read(e.target.result, {type:'array', cellDates:true});
           const ws = wb.Sheets[wb.SheetNames[0]];
-          rows = XLSX.utils.sheet_to_json(ws, {header:1, raw:false, defval:''});
+          rows = XLSX.utils.sheet_to_json(ws, {header:1, raw:true, defval:''});
         } else {
           rows = parseCSV(e.target.result);
         }
@@ -1106,6 +1236,29 @@ function renderPedidos(){
   importPanel.appendChild(fileInput);
   importPanel.appendChild(importStatus);
   main.appendChild(importPanel);
+
+  // Pestañas por etapa del pedido
+  const pedidoTabsDef = [
+    ['todos','Todos'], ['confirmado','Confirmado'], ['guia_generada','Guía generada'],
+    ['entregado','Entregado'], ['guia_enviada','Guía enviada al cliente']
+  ];
+  const tabsDiv = document.createElement('div'); tabsDiv.className='tabs';
+  pedidoTabsDef.forEach(([id,label])=>{
+    const subset = pedidosForTab(id);
+    const b = document.createElement('button');
+    b.className = pedidoTab===id ? 'active':'';
+    b.textContent = `${label} (${subset.length})`;
+    b.onclick = ()=>{ pedidoTab=id; renderMain(); };
+    tabsDiv.appendChild(b);
+  });
+  main.appendChild(tabsDiv);
+
+  const tabSubset = pedidosForTab(pedidoTab);
+  const tabFacturacion = tabSubset.reduce((s,p)=>s+parseNum(p.precioVenta),0);
+  const miniKpi = document.createElement('div'); miniKpi.className='kpi-grid'; miniKpi.style.marginBottom='16px';
+  miniKpi.innerHTML = `<div class="kpi"><div class="label">Pedidos en esta pestaña</div><div class="value">${tabSubset.length}</div></div>
+    <div class="kpi"><div class="label">Facturación de esta pestaña</div><div class="value">${money(tabFacturacion)}</div></div>`;
+  main.appendChild(miniKpi);
 
   // Table + filters
   const tablePanel = document.createElement('div'); tablePanel.className='panel';
@@ -1124,20 +1277,20 @@ function renderPedidos(){
     document.getElementById('filt_trans').oninput = (e)=>{ pedidoFilters.transportadora = e.target.value; renderMain(); };
   },0);
 
-  let list = STATE.pedidos;
+  let list = tabSubset;
   if(pedidoFilters.estado) list = list.filter(p=>p.estado===pedidoFilters.estado);
   if(pedidoFilters.transportadora) list = list.filter(p=>(p.transportadora||'').toLowerCase().includes(pedidoFilters.transportadora.toLowerCase()));
 
   const wrap = document.createElement('div'); wrap.className='table-wrap';
   if(list.length===0){
-    wrap.innerHTML = `<div class="empty">No hay pedidos que coincidan con el filtro.</div>`;
+    wrap.innerHTML = `<div class="empty">No hay pedidos que coincidan con esta pestaña o filtro.</div>`;
   } else {
     let rows = '';
     list.slice().reverse().forEach(p=>{
       rows += `<tr>
         <td>${p.fecha||'—'}</td>
         <td>${p.guia||'—'}</td>
-        <td><span class="pill ${estadoClass(p.estado)}">${p.estado}</span></td>
+        <td><select data-estado-row="${p.id}">${ESTADOS.map(e=>`<option ${p.estado===e?'selected':''}>${e}</option>`).join('')}</select></td>
         <td>${p.transportadora||'—'}</td>
         <td>${p.cliente||'—'}</td>
         <td>${p.producto||'—'}</td>
@@ -1161,6 +1314,15 @@ function renderPedidos(){
     document.querySelectorAll('[data-del]').forEach(btn=>{
       btn.onclick = async ()=>{
         STATE.pedidos = STATE.pedidos.filter(p=>p.id!==btn.dataset.del);
+        await saveList(KEYS.pedidos, STATE.pedidos);
+        renderMain();
+      };
+    });
+    document.querySelectorAll('[data-estado-row]').forEach(sel=>{
+      sel.onchange = async (e)=>{
+        const p = STATE.pedidos.find(x=>x.id===sel.dataset.estadoRow);
+        if(!p) return;
+        p.estado = e.target.value;
         await saveList(KEYS.pedidos, STATE.pedidos);
         renderMain();
       };
@@ -1318,10 +1480,23 @@ function renderSeguimiento(){
 
 /* ================= PRODUCTOS ================= */
 function findProducto(nombre){ return STATE.productos.find(p=>p.nombre===nombre); }
+function findEnvioCosto(ciudad, transportadora){
+  if(!ciudad) return null;
+  let match = STATE.envios.find(e=>e.ciudad===ciudad && e.transportadora===transportadora);
+  if(match) return match;
+  match = STATE.envios.find(e=>e.ciudad===ciudad);
+  return match || null;
+}
+async function upsertEnvio(ciudad, transportadora, costo){
+  if(!ciudad || !transportadora || !costo) return;
+  let e = STATE.envios.find(x=>x.ciudad===ciudad && x.transportadora===transportadora);
+  if(e){ e.costo = costo; } else { STATE.envios.push({id:uid(), ciudad, transportadora, costo}); }
+  await saveList(KEYS.envios, STATE.envios);
+}
 
 function renderProductos(){
   const main = document.getElementById('main');
-  main.appendChild(head('Productos', 'Los productos que vendes: precio de venta y costo base. Alimentan Pedidos y Costos.'));
+  main.appendChild(head('Productos', 'Los productos que vendes: precio de venta y costo base. Alimentan Pedidos.'));
 
   const formPanel = document.createElement('div'); formPanel.className='panel';
   formPanel.innerHTML = `<h2>Agregar producto</h2>`;
@@ -1350,16 +1525,17 @@ function renderProductos(){
   main.appendChild(formPanel);
 
   const tablePanel = document.createElement('div'); tablePanel.className='panel';
-  tablePanel.innerHTML = `<h2>Catálogo (${STATE.productos.length})</h2>`;
+  tablePanel.innerHTML = `<h2>Catálogo (${STATE.productos.length})</h2>
+    <p class="hint">El "margen bruto" es solo precio − costo de producto. Todavía NO resta el envío, porque el envío cambia según la ciudad (lo ves en "Envíos por ciudad"). Tu ganancia real por pedido, ya con envío descontado, se calcula en Dashboard, Estadísticas y Pedidos.</p>`;
   const wrap = document.createElement('div'); wrap.className='table-wrap';
   if(STATE.productos.length===0){
-    wrap.innerHTML = `<div class="empty">Aún no agregas productos. Agrégalos aquí para que aparezcan como lista desplegable en Pedidos y Costos.</div>`;
+    wrap.innerHTML = `<div class="empty">Aún no agregas productos. Agrégalos aquí para que aparezcan como lista desplegable en Pedidos.</div>`;
   } else {
     let rows='';
     STATE.productos.forEach(p=>{
       const margen = parseNum(p.precioVenta) - parseNum(p.costoProducto);
       rows += `<tr><td>${p.nombre}</td><td>${money(p.precioVenta)}</td><td>${money(p.costoProducto)}</td>
-        <td style="color:${margen>=0?'var(--green)':'var(--red)'}">${money(margen)}</td>
+        <td style="color:${margen>=0?'var(--green)':'var(--red)'}">${money(margen)} <span style="color:var(--muted-2); font-size:11px">(bruto, sin envío)</span></td>
         <td><button class="btn btn-danger btn-sm" data-delp="${p.id}">Eliminar</button></td></tr>`;
     });
     wrap.innerHTML = `<table><thead><tr><th>Producto</th><th>Precio venta</th><th>Costo producto</th><th>Margen</th><th></th></tr></thead><tbody>${rows}</tbody></table>`;
@@ -1380,94 +1556,76 @@ function renderProductos(){
 }
 
 /* ================= COSTOS Y PROVEEDORES ================= */
-function renderCostos(){
+function renderEnvios(){
   const main = document.getElementById('main');
-  main.appendChild(head('Costos y proveedores', 'Registra tus compras: qué compraste, a quién y a qué costo. Se concilia solo con lo vendido en Pedidos.'));
+  main.appendChild(head('Envíos por ciudad', 'Registro de cuánto cobra cada transportadora según la ciudad — para que Pedidos autocomplete el costo de envío solo.'));
 
   const formPanel = document.createElement('div'); formPanel.className='panel';
-  formPanel.innerHTML = `<h2>Registrar compra</h2>`;
+  formPanel.innerHTML = `<h2>Registrar / actualizar costo de envío</h2>
+    <p class="hint">Cada vez que guardas un pedido con ciudad, transportadora y costo de envío, esto se registra aquí solo. También puedes agregarlo o corregirlo directamente.</p>`;
   const grid = document.createElement('div'); grid.className='form-grid';
-  grid.innerHTML = `
-    <div class="field"><label>Fecha</label><input id="cf_fecha" type="date"></div>
-    <div class="field"><label>Proveedor</label><input id="cf_proveedor" type="text"></div>
-    <div class="field"><label>Producto</label><select id="cf_producto"><option value="">${STATE.productos.length?'Selecciona...':'No hay productos — agrega en "Productos"'}</option>${STATE.productos.map(p=>`<option value="${p.nombre}">${p.nombre}</option>`).join('')}</select></div>
-    <div class="field"><label>Cantidad</label><input id="cf_cantidad" type="number" step="1"></div>
-    <div class="field"><label>Costo unitario</label><input id="cf_costoUnitario" type="number" step="0.01"></div>
-  `;
+  const provField = document.createElement('div'); provField.className='field';
+  provField.innerHTML = `<label>Provincia</label><select id="ef_provincia"><option value="">Selecciona...</option>${Object.keys(PROVINCIAS_ECUADOR).map(p=>`<option>${p}</option>`).join('')}</select>`;
+  grid.appendChild(provField);
+  const ciudadField = document.createElement('div'); ciudadField.className='field';
+  ciudadField.innerHTML = `<label>Ciudad / Cantón</label><select id="ef_ciudad"><option value="">Elige provincia primero</option></select>`;
+  grid.appendChild(ciudadField);
+  const transField = document.createElement('div'); transField.className='field';
+  transField.innerHTML = `<label>Transportadora</label><select id="ef_transportadora"><option value="">Selecciona...</option>${TRANSPORTADORAS.map(t=>`<option>${t}</option>`).join('')}</select>`;
+  grid.appendChild(transField);
+  const costoField = document.createElement('div'); costoField.className='field';
+  costoField.innerHTML = `<label>Costo de envío</label><input id="ef_costo" type="number" step="0.01">`;
+  grid.appendChild(costoField);
   formPanel.appendChild(grid);
-  const btn = document.createElement('button'); btn.className='btn btn-primary'; btn.textContent='Guardar compra';
+
+  const btn = document.createElement('button'); btn.className='btn btn-primary'; btn.textContent='Guardar';
   const status = document.createElement('span'); status.style.marginLeft='10px'; status.style.fontSize='12px';
   btn.onclick = async ()=>{
-    const c = {
-      id:uid(),
-      fecha: document.getElementById('cf_fecha').value,
-      proveedor: document.getElementById('cf_proveedor').value,
-      producto: document.getElementById('cf_producto').value,
-      cantidad: document.getElementById('cf_cantidad').value,
-      costoUnitario: document.getElementById('cf_costoUnitario').value,
-    };
-    c.total = parseNum(c.cantidad) * parseNum(c.costoUnitario);
-    if(!c.producto){ status.textContent='Selecciona el producto.'; status.style.color='var(--red)'; return; }
-    STATE.compras.push(c);
-    const ok = await saveList(KEYS.compras, STATE.compras);
-    status.textContent = ok?'Guardado.':'No se pudo guardar.'; status.style.color= ok?'var(--green)':'var(--red)';
+    const ciudad = document.getElementById('ef_ciudad').value;
+    const transportadora = document.getElementById('ef_transportadora').value;
+    const costo = parseNum(document.getElementById('ef_costo').value);
+    if(!ciudad || !transportadora || !costo){ status.textContent='Completa ciudad, transportadora y costo.'; status.style.color='var(--red)'; return; }
+    await upsertEnvio(ciudad, transportadora, costo);
+    status.textContent = 'Guardado.'; status.style.color='var(--green)';
     renderMain();
   };
   const row = document.createElement('div'); row.appendChild(btn); row.appendChild(status);
   formPanel.appendChild(row);
   main.appendChild(formPanel);
 
-  // Conciliación por producto (comprado vs vendido), estilo dashboard
-  const reconPanel = document.createElement('div'); reconPanel.className='panel';
-  reconPanel.innerHTML = `<h2>Conciliación por producto</h2><p class="hint">Cuánto has comprado vs. cuánto has vendido en Pedidos — para detectar faltantes de stock.</p>`;
-  const wrapR = document.createElement('div'); wrapR.className='table-wrap';
-  const nombresProductos = STATE.productos.map(p=>p.nombre);
-  // incluir también productos que aparecen en compras/pedidos aunque ya no estén en el catálogo
-  STATE.compras.forEach(c=>{ if(c.producto && !nombresProductos.includes(c.producto)) nombresProductos.push(c.producto); });
-  STATE.pedidos.forEach(p=>{ if(p.producto && !nombresProductos.includes(p.producto)) nombresProductos.push(p.producto); });
-
-  if(nombresProductos.length===0){
-    wrapR.innerHTML = `<div class="empty">Agrega productos y registra compras/pedidos para ver la conciliación.</div>`;
-  } else {
-    let rows='';
-    nombresProductos.forEach(nombre=>{
-      const comprasProd = STATE.compras.filter(c=>c.producto===nombre);
-      const pedidosProd = STATE.pedidos.filter(p=>p.producto===nombre && p.estado!=='Cancelado');
-      const comprado = comprasProd.reduce((s,c)=>s+parseNum(c.cantidad),0);
-      const vendido = pedidosProd.reduce((s,p)=>s+parseNum(p.cantidad),0);
-      const invertido = comprasProd.reduce((s,c)=>s+parseNum(c.total),0);
-      const stock = comprado - vendido;
-      rows += `<tr><td>${nombre}</td><td>${comprado}</td><td>${vendido}</td>
-        <td style="color:${stock<0?'var(--red)':'var(--ink)'}">${stock}</td>
-        <td>${money(invertido)}</td></tr>`;
-    });
-    wrapR.innerHTML = `<table><thead><tr><th>Producto</th><th>Comprado</th><th>Vendido (pedidos)</th><th>Stock estimado</th><th>Invertido en compras</th></tr></thead><tbody>${rows}</tbody></table>
-      <p class="note">Stock estimado negativo = vendiste más de lo que registraste como comprado (revisa si falta alguna compra).</p>`;
-  }
-  reconPanel.appendChild(wrapR);
-  main.appendChild(reconPanel);
+  setTimeout(()=>{
+    document.getElementById('ef_provincia').onchange = (e)=>{
+      const ciudades = PROVINCIAS_ECUADOR[e.target.value] || [];
+      const sel = document.getElementById('ef_ciudad');
+      sel.innerHTML = ciudades.length
+        ? '<option value="">Selecciona...</option>' + ciudades.map(c=>`<option>${c}</option>`).join('')
+        : '<option value="">Elige provincia primero</option>';
+    };
+  },0);
 
   const tablePanel = document.createElement('div'); tablePanel.className='panel';
-  const totalCompras = STATE.compras.reduce((s,c)=>s+parseNum(c.total),0);
-  tablePanel.innerHTML = `<h2>Compras registradas (${STATE.compras.length})</h2><p class="hint">Total invertido en compras: ${money(totalCompras)}</p>`;
+  tablePanel.innerHTML = `<h2>Costos registrados (${STATE.envios.length})</h2>`;
   const wrap = document.createElement('div'); wrap.className='table-wrap';
-  if(STATE.compras.length===0){
-    wrap.innerHTML = `<div class="empty">Aún no registras compras a proveedores.</div>`;
+  if(STATE.envios.length===0){
+    wrap.innerHTML = `<div class="empty">Aún no hay costos de envío registrados. Se irán llenando solos a medida que cargues pedidos con costo de envío, o agrégalos manualmente arriba.</div>`;
   } else {
     let rows='';
-    STATE.compras.slice().reverse().forEach(c=>{
-      rows += `<tr><td>${c.fecha||'—'}</td><td>${c.proveedor||'—'}</td><td>${c.producto||'—'}</td>
-        <td>${c.cantidad||'—'}</td><td>${money(c.costoUnitario)}</td><td>${money(c.total)}</td>
-        <td><button class="btn btn-danger btn-sm" data-delc="${c.id}">Eliminar</button></td></tr>`;
+    STATE.envios.slice().reverse().forEach(e=>{
+      rows += `<tr><td>${e.ciudad}</td><td>${e.transportadora}</td><td>${money(e.costo)}</td>
+        <td><button class="btn btn-danger btn-sm" data-dele="${e.id}">Eliminar</button></td></tr>`;
     });
-    wrap.innerHTML = `<table><thead><tr><th>Fecha</th><th>Proveedor</th><th>Producto</th><th>Cant.</th><th>Costo unit.</th><th>Total</th><th></th></tr></thead><tbody>${rows}</tbody></table>`;
+    wrap.innerHTML = `<table><thead><tr><th>Ciudad</th><th>Transportadora</th><th>Costo de envío</th><th></th></tr></thead><tbody>${rows}</tbody></table>`;
   }
   tablePanel.appendChild(wrap);
   main.appendChild(tablePanel);
 
   setTimeout(()=>{
-    document.querySelectorAll('[data-delc]').forEach(b=>{
-      b.onclick = async ()=>{ STATE.compras = STATE.compras.filter(c=>c.id!==b.dataset.delc); await saveList(KEYS.compras, STATE.compras); renderMain(); };
+    document.querySelectorAll('[data-dele]').forEach(b=>{
+      b.onclick = async ()=>{
+        STATE.envios = STATE.envios.filter(x=>x.id!==b.dataset.dele);
+        await saveList(KEYS.envios, STATE.envios);
+        renderMain();
+      };
     });
   },0);
 }
