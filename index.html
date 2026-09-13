@@ -115,6 +115,11 @@
 
   .legend-row{display:flex; gap:16px; flex-wrap:wrap; margin-top:10px; font-size:11.5px; color:var(--muted);}
   .legend-row .ldot{width:8px; height:8px; border-radius:50%; display:inline-block; margin-right:6px;}
+  .chart-tooltip{
+    display:none; position:absolute; background:var(--bg-panel); border:1px solid var(--line);
+    border-radius:7px; padding:7px 11px; font-size:11.5px; z-index:5; white-space:nowrap; pointer-events:none;
+    box-shadow:var(--shadow);
+  }
 
   .funnel-row{display:flex; align-items:center; gap:14px; margin-bottom:14px;}
   .funnel-label{width:150px; font-size:12.5px; color:var(--muted); display:flex; align-items:center; gap:8px; flex-shrink:0;}
@@ -424,6 +429,7 @@ const NAV = [
   {id:'productos', label:'Productos'},
   {id:'envios', label:'Envíos por ciudad'},
   {id:'finanzas', label:'Finanzas'},
+  {id:'reportes', label:'Reportes'},
   {id:'calculadora', label:'Calculadora de rentabilidad'},
   {id:'campanas', label:'Campañas'},
 ];
@@ -455,10 +461,12 @@ function renderMain(){
   if(!STATE.loaded){ main.innerHTML = '<p style="color:var(--muted)">Cargando datos...</p>'; return; }
   const renderers = {
     dashboard: renderDashboard, estadisticas: renderEstadisticas, pedidos: renderPedidos, seguimiento: renderSeguimiento, productos: renderProductos, envios: renderEnvios,
-    finanzas: renderFinanzas, calculadora: renderCalculadora, campanas: renderCampanas
+    finanzas: renderFinanzas, calculadora: renderCalculadora, campanas: renderCampanas, reportes: renderReportes
   };
   main.innerHTML = '';
+  pendingCharts = [];
   renderers[STATE.tab]();
+  setTimeout(wireCharts, 0);
 }
 
 function head(title, hint){
@@ -515,18 +523,16 @@ function dateRangeArray(desde, hasta){
   while(d<=end){ out.push(d.toISOString().slice(0,10)); d.setDate(d.getDate()+1); }
   return out;
 }
+let pendingCharts = [];
 function lineChartSVG(dates, series, opts){
   opts = opts || {};
-  const w = opts.width || 640, h = opts.height || 190, pad = 28;
+  const w = opts.width || 640, h = opts.height || 190, pad = 30;
   const maxY = Math.max(1, ...series.flatMap(s=>s.data));
   const stepX = dates.length>1 ? (w-pad*2)/(dates.length-1) : 0;
-  const pointsFor = (data)=> data.map((v,i)=>{
-    const x = pad + i*stepX;
-    const y = h - pad - (v/maxY)*(h-pad*2);
-    return x.toFixed(1)+','+y.toFixed(1);
-  }).join(' ');
-  let svg = `<svg viewBox="0 0 ${w} ${h}" width="100%" height="${h}" style="overflow:visible">`;
-  // líneas guía horizontales
+  const xFor = i => pad + i*stepX;
+  const yFor = v => h - pad - (v/maxY)*(h-pad*2);
+  const pointsFor = (data)=> data.map((v,i)=> xFor(i).toFixed(1)+','+yFor(v).toFixed(1)).join(' ');
+  let svg = `<svg viewBox="0 0 ${w} ${h}" width="100%" height="${h}" style="overflow:visible" class="chart-svg">`;
   for(let i=0;i<=3;i++){
     const y = pad + i*((h-pad*2)/3);
     svg += `<line x1="${pad}" y1="${y.toFixed(1)}" x2="${w-pad}" y2="${y.toFixed(1)}" stroke="var(--line)" stroke-width="1"/>`;
@@ -534,8 +540,63 @@ function lineChartSVG(dates, series, opts){
   series.forEach(s=>{
     svg += `<polyline points="${pointsFor(s.data)}" fill="none" stroke="${s.color}" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>`;
   });
+  if(dates.length){
+    const nLabels = Math.min(6, dates.length);
+    const labelStep = Math.max(1, Math.round((dates.length-1)/((nLabels-1)||1)));
+    for(let i=0;i<dates.length;i+=labelStep){
+      const label = dates[i].slice(5).split('-').reverse().join('/');
+      svg += `<text x="${xFor(i).toFixed(1)}" y="${h-6}" font-size="9" fill="var(--muted-2)" text-anchor="middle">${label}</text>`;
+    }
+  }
+  svg += `<line class="hover-line" x1="0" y1="${pad}" x2="0" y2="${h-pad}" stroke="var(--muted-2)" stroke-width="1" style="display:none"/>`;
+  series.forEach((s,si)=>{
+    svg += `<circle class="hover-dot" data-si="${si}" r="3.5" fill="${s.color}" style="display:none"/>`;
+  });
+  svg += `<rect class="chart-overlay" x="${pad}" y="0" width="${Math.max(1,w-pad*2)}" height="${h}" fill="transparent" style="cursor:crosshair"/>`;
   svg += '</svg>';
-  return svg;
+  const ttId = 'tt_'+Math.random().toString(36).slice(2,9);
+  pendingCharts.push({ttId, dates, series, w, h, pad, stepX, maxY});
+  return `<div class="chart-wrap" style="position:relative">${svg}<div class="chart-tooltip" id="${ttId}"></div></div>`;
+}
+function wireCharts(){
+  pendingCharts.forEach(cfg=>{
+    const tooltip = document.getElementById(cfg.ttId);
+    if(!tooltip) return;
+    const wrap = tooltip.parentElement;
+    const svg = wrap.querySelector('svg.chart-svg');
+    const overlay = svg.querySelector('.chart-overlay');
+    const hoverLine = svg.querySelector('.hover-line');
+    const dots = svg.querySelectorAll('.hover-dot');
+    const showAt = (clientX)=>{
+      const rect = svg.getBoundingClientRect();
+      if(rect.width===0) return;
+      const scaleX = cfg.w / rect.width;
+      const mx = (clientX - rect.left) * scaleX;
+      let idx = cfg.stepX ? Math.round((mx - cfg.pad) / cfg.stepX) : 0;
+      idx = Math.max(0, Math.min(cfg.dates.length-1, idx));
+      const x = cfg.pad + idx*cfg.stepX;
+      hoverLine.setAttribute('x1', x); hoverLine.setAttribute('x2', x); hoverLine.style.display='';
+      let html = `<div style="font-weight:700; margin-bottom:4px">${cfg.dates[idx]}</div>`;
+      cfg.series.forEach((s,si)=>{
+        const val = s.data[idx];
+        const y = cfg.h - cfg.pad - (val/cfg.maxY)*(cfg.h-cfg.pad*2);
+        if(dots[si]){ dots[si].setAttribute('cx', x); dots[si].setAttribute('cy', y.toFixed(1)); dots[si].style.display=''; }
+        html += `<div><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${s.color};margin-right:5px"></span>${s.name||''} ${s.isMoney? money(val) : val}</div>`;
+      });
+      tooltip.innerHTML = html;
+      tooltip.style.display = 'block';
+      const wrapRect = wrap.getBoundingClientRect();
+      const leftPx = (x/cfg.w)*wrapRect.width;
+      tooltip.style.left = Math.max(0, Math.min(leftPx+10, wrapRect.width-150)) + 'px';
+      tooltip.style.top = '2px';
+    };
+    overlay.addEventListener('mousemove', (ev)=>showAt(ev.clientX));
+    overlay.addEventListener('touchmove', (ev)=>{ if(ev.touches[0]) showAt(ev.touches[0].clientX); }, {passive:true});
+    overlay.addEventListener('mouseleave', ()=>{
+      tooltip.style.display='none'; hoverLine.style.display='none';
+      dots.forEach(d=>d.style.display='none');
+    });
+  });
 }
 function bucketByDate(pedidos, dates, matchFn){
   const map = {}; dates.forEach(d=>map[d]=0);
@@ -653,9 +714,9 @@ function renderDashboard(){
   const chart1Wrap = document.createElement('div'); chart1Wrap.style.marginTop='16px';
   if(dates.length>1 && dates.length<=120){
     chart1Wrap.innerHTML = lineChartSVG(dates, [
-      {color:'var(--purple)', data:serieEntrantes},
-      {color:'var(--blue)', data:serieConfirmados},
-      {color:'var(--green)', data:serieEntregados},
+      {color:'var(--purple)', data:serieEntrantes, name:'Entrantes', isMoney:false},
+      {color:'var(--blue)', data:serieConfirmados, name:'Confirmados', isMoney:false},
+      {color:'var(--green)', data:serieEntregados, name:'Entregados', isMoney:false},
     ]);
     chart1Wrap.innerHTML += `<div class="legend-row">
       <span><span class="ldot" style="background:var(--purple)"></span>Pedidos entrantes</span>
@@ -676,9 +737,9 @@ function renderDashboard(){
   const chart2Wrap = document.createElement('div');
   if(dates.length>1 && dates.length<=120){
     chart2Wrap.innerHTML = lineChartSVG(dates, [
-      {color:'var(--purple)', data:serieFactPedidos},
-      {color:'var(--blue)', data:serieFactConfirmados},
-      {color:'var(--green)', data:serieFactEntregados},
+      {color:'var(--purple)', data:serieFactPedidos, name:'Fact. pedidos', isMoney:true},
+      {color:'var(--blue)', data:serieFactConfirmados, name:'Fact. confirmados', isMoney:true},
+      {color:'var(--green)', data:serieFactEntregados, name:'Fact. entregados', isMoney:true},
     ]);
     chart2Wrap.innerHTML += `<div class="legend-row">
       <span><span class="ldot" style="background:var(--purple)"></span>Facturación pedidos</span>
@@ -852,7 +913,11 @@ function renderEstadResumen(main, pedidos, m, pedidosHoy, facturadoHoy, noEntreg
     const sE = bucketByDate(pedidos, dates, ()=>true);
     const sC = bucketByDate(pedidos, dates, p=>['Confirmado','En tránsito','Entregado'].includes(p.estado));
     const sG = bucketByDate(pedidos, dates, p=>p.estado==='Entregado');
-    trendPanel.innerHTML += lineChartSVG(dates, [{color:'var(--purple)',data:sE},{color:'var(--blue)',data:sC},{color:'var(--green)',data:sG}]);
+    trendPanel.innerHTML += lineChartSVG(dates, [
+      {color:'var(--purple)',data:sE,name:'Entrantes',isMoney:false},
+      {color:'var(--blue)',data:sC,name:'Confirmados',isMoney:false},
+      {color:'var(--green)',data:sG,name:'Entregados',isMoney:false}
+    ]);
     trendPanel.innerHTML += `<div class="legend-row">
       <span><span class="ldot" style="background:var(--purple)"></span>Pedidos entrantes</span>
       <span><span class="ldot" style="background:var(--blue)"></span>Confirmados</span>
@@ -869,7 +934,11 @@ function renderEstadResumen(main, pedidos, m, pedidosHoy, facturadoHoy, noEntreg
     const sFP = bucketSumByDate(pedidos, dates, ()=>true, 'precioVenta');
     const sFC = bucketSumByDate(pedidos, dates, p=>['Confirmado','En tránsito','Entregado'].includes(p.estado), 'precioVenta');
     const sFG = bucketSumByDate(pedidos, dates, p=>p.estado==='Entregado', 'precioVenta');
-    factPanel.innerHTML += lineChartSVG(dates, [{color:'var(--purple)',data:sFP},{color:'var(--blue)',data:sFC},{color:'var(--green)',data:sFG}]);
+    factPanel.innerHTML += lineChartSVG(dates, [
+      {color:'var(--purple)',data:sFP,name:'Fact. pedidos',isMoney:true},
+      {color:'var(--blue)',data:sFC,name:'Fact. confirmados',isMoney:true},
+      {color:'var(--green)',data:sFG,name:'Fact. entregados',isMoney:true}
+    ]);
     factPanel.innerHTML += `<div class="legend-row">
       <span><span class="ldot" style="background:var(--purple)"></span>Fact. pedidos</span>
       <span><span class="ldot" style="background:var(--blue)"></span>Fact. confirmados</span>
@@ -1287,17 +1356,24 @@ function renderPedidos(){
   } else {
     let rows = '';
     list.slice().reverse().forEach(p=>{
+      const matchesCatalog = p.producto && findProducto(p.producto);
+      const prodOptions = STATE.productos.map(pr=>`<option value="${pr.nombre}" ${p.producto===pr.nombre?'selected':''}>${pr.nombre}</option>`).join('');
+      const prodSelectHtml = `<select data-producto-row="${p.id}">
+          <option value="">${STATE.productos.length? 'Selecciona...' : 'No hay productos'}</option>
+          ${(!matchesCatalog && p.producto) ? `<option value="${p.producto}" selected>⚠ ${p.producto} (no coincide)</option>` : ''}
+          ${prodOptions}
+        </select>`;
       rows += `<tr>
         <td>${p.fecha||'—'}</td>
         <td>${p.guia||'—'}</td>
         <td><select data-estado-row="${p.id}">${ESTADOS.map(e=>`<option ${p.estado===e?'selected':''}>${e}</option>`).join('')}</select></td>
         <td>${p.transportadora||'—'}</td>
         <td>${p.cliente||'—'}</td>
-        <td>${p.producto||'—'}</td>
+        <td>${prodSelectHtml}</td>
         <td>${p.cantidad||'—'}</td>
         <td>${money(p.precioVenta)}</td>
         <td>${money(p.costoProducto)}</td>
-        <td>${money(p.costoEnvio)}</td>
+        <td><input type="number" step="0.01" data-envio-row="${p.id}" value="${p.costoEnvio||''}" style="width:88px"></td>
         <td>${p.ciudad||'—'}</td>
         <td class="row-actions"><button class="btn btn-danger btn-sm" data-del="${p.id}">Eliminar</button></td>
       </tr>`;
@@ -1324,6 +1400,29 @@ function renderPedidos(){
         if(!p) return;
         p.estado = e.target.value;
         await saveList(KEYS.pedidos, STATE.pedidos);
+        renderMain();
+      };
+    });
+    document.querySelectorAll('[data-producto-row]').forEach(sel=>{
+      sel.onchange = async (e)=>{
+        const p = STATE.pedidos.find(x=>x.id===sel.dataset.productoRow);
+        if(!p) return;
+        p.producto = e.target.value;
+        const catalogo = findProducto(e.target.value);
+        if(catalogo){ p.precioVenta = catalogo.precioVenta; p.costoProducto = catalogo.costoProducto; }
+        await saveList(KEYS.pedidos, STATE.pedidos);
+        renderMain();
+      };
+    });
+    document.querySelectorAll('[data-envio-row]').forEach(inp=>{
+      inp.onchange = async (e)=>{
+        const p = STATE.pedidos.find(x=>x.id===inp.dataset.envioRow);
+        if(!p) return;
+        p.costoEnvio = e.target.value;
+        await saveList(KEYS.pedidos, STATE.pedidos);
+        if(p.ciudad && p.transportadora && parseNum(p.costoEnvio)>0){
+          await upsertEnvio(p.ciudad, p.transportadora, parseNum(p.costoEnvio));
+        }
         renderMain();
       };
     });
@@ -1752,6 +1851,173 @@ function renderCampanas(){
     document.querySelectorAll('[data-delcp]').forEach(b=>{
       b.onclick = async ()=>{ STATE.egresos = STATE.egresos.filter(e=>e.id!==b.dataset.delcp); await saveList(KEYS.egresos, STATE.egresos); renderMain(); };
     });
+  },0);
+}
+
+/* ================= REPORTES ================= */
+let reportState = { desde:'', hasta:'', tipo:'productos' };
+function ensureReportRango(){
+  if(reportState.desde && reportState.hasta) return;
+  const hoy = new Date();
+  reportState.hasta = hoy.toISOString().slice(0,10);
+  const d = new Date(hoy); d.setDate(d.getDate()-90);
+  reportState.desde = d.toISOString().slice(0,10);
+}
+function buildReporteProductos(pedidos){
+  const nombres = [...new Set(pedidos.map(p=>p.producto).filter(Boolean))];
+  return nombres.map(nombre=>{
+    const ped = pedidos.filter(p=>p.producto===nombre);
+    const entregados = ped.filter(p=>p.estado==='Entregado');
+    const vendidos = ped.reduce((s,p)=>s+parseNum(p.cantidad),0);
+    const facturacion = ped.reduce((s,p)=>s+parseNum(p.precioVenta),0);
+    const facturacionEntregada = entregados.reduce((s,p)=>s+parseNum(p.precioVenta),0);
+    const costoTotal = entregados.reduce((s,p)=>s+parseNum(p.costoProducto)+parseNum(p.costoEnvio),0);
+    return { 'Producto':nombre, 'Pedidos':ped.length, 'Unidades':vendidos, 'Entregados':entregados.length,
+      'Facturación total':facturacion, 'Facturación entregada':facturacionEntregada,
+      'Ganancia estimada':facturacionEntregada-costoTotal, 'Ticket promedio': ped.length? facturacion/ped.length : 0 };
+  }).sort((a,b)=>b['Facturación total']-a['Facturación total']);
+}
+function buildReporteTransportadoras(pedidos){
+  const usadas = [...new Set(pedidos.map(p=>p.transportadora).filter(Boolean))];
+  return usadas.map(t=>{
+    const ped = pedidos.filter(p=>p.transportadora===t);
+    const entregados = ped.filter(p=>p.estado==='Entregado').length;
+    const devueltos = ped.filter(p=>p.estado==='Devuelto').length;
+    const facturacionEntregada = ped.filter(p=>p.estado==='Entregado').reduce((s,p)=>s+parseNum(p.precioVenta),0);
+    const costoEnvioTotal = ped.reduce((s,p)=>s+parseNum(p.costoEnvio),0);
+    return { 'Transportadora':t, 'Pedidos':ped.length, 'Entregados':entregados, 'Devueltos':devueltos,
+      '% Entrega': ped.length? (entregados/ped.length*100) : 0, 'Facturación entregada':facturacionEntregada,
+      'Costo envío total':costoEnvioTotal };
+  }).sort((a,b)=>b.Pedidos-a.Pedidos);
+}
+function buildReporteCiudades(pedidos){
+  const ciudades = [...new Set(pedidos.map(p=>p.ciudad).filter(Boolean))];
+  return ciudades.map(c=>{
+    const ped = pedidos.filter(p=>p.ciudad===c);
+    const entregados = ped.filter(p=>p.estado==='Entregado').length;
+    const facturacion = ped.reduce((s,p)=>s+parseNum(p.precioVenta),0);
+    const conEnvio = ped.filter(p=>parseNum(p.costoEnvio)>0);
+    const costoEnvioProm = conEnvio.length ? conEnvio.reduce((s,p)=>s+parseNum(p.costoEnvio),0)/conEnvio.length : 0;
+    return { 'Ciudad':c, 'Provincia': ped.find(p=>p.provincia)?.provincia||'', 'Pedidos':ped.length,
+      'Entregados':entregados, 'Facturación':facturacion, 'Costo envío promedio':costoEnvioProm };
+  }).sort((a,b)=>b.Pedidos-a.Pedidos);
+}
+function buildReporteClientes(pedidos){
+  const nombres = [...new Set(pedidos.map(p=>p.cliente).filter(Boolean))];
+  return nombres.map(nombre=>{
+    const ped = pedidos.filter(p=>p.cliente===nombre);
+    const entregados = ped.filter(p=>p.estado==='Entregado').length;
+    const facturacion = ped.reduce((s,p)=>s+parseNum(p.precioVenta),0);
+    return { 'Cliente':nombre, 'Teléfono': ped.find(p=>p.telefono)?.telefono||'', 'Pedidos':ped.length,
+      'Entregados':entregados, 'Facturación':facturacion };
+  }).sort((a,b)=>b.Pedidos-a.Pedidos).slice(0,80);
+}
+function buildReporteFinanciero(pedidos, egresos){
+  const m = computeMetrics(pedidos, STATE.compras, egresos);
+  return [
+    {Rubro:'Facturación total', Valor: m.facturacionTotal, Tipo:'dinero'},
+    {Rubro:'Facturación entregada', Valor: m.facturacionEntregada, Tipo:'dinero'},
+    {Rubro:'Facturación en tránsito', Valor: m.facturacionTransito, Tipo:'dinero'},
+    {Rubro:'Facturación en novedad', Valor: m.facturacionNovedad, Tipo:'dinero'},
+    {Rubro:'Costo de producto (entregados)', Valor: -m.costoProductoEntregado, Tipo:'dinero'},
+    {Rubro:'Costo de envío (entregados)', Valor: -m.costoEnvioEntregado, Tipo:'dinero'},
+    {Rubro:'Gasto en campañas (ads)', Valor: -m.gastoAds, Tipo:'dinero'},
+    {Rubro:'Otros gastos', Valor: -m.gastoOtros, Tipo:'dinero'},
+    {Rubro:'Utilidad neta', Valor: m.utilidadNeta, Tipo:'dinero'},
+    {Rubro:'% Confirmación', Valor: m.pctConfirmacion, Tipo:'pct'},
+    {Rubro:'% Entrega', Valor: m.pctEntrega, Tipo:'pct'},
+    {Rubro:'Ticket promedio', Valor: m.ticketMedio, Tipo:'dinero'},
+  ];
+}
+const REPORTES_DEF = [
+  ['productos','Por producto', buildReporteProductos],
+  ['transportadoras','Por transportadora', buildReporteTransportadoras],
+  ['ciudades','Por ciudad', buildReporteCiudades],
+  ['clientes','Top clientes', buildReporteClientes],
+  ['financiero','Financiero resumen', buildReporteFinanciero],
+];
+function xlsxAvailable(){ return typeof XLSX !== 'undefined'; }
+function exportReporte(nombre, data){
+  if(!xlsxAvailable()){ alert('No se pudo cargar el generador de Excel (revisa tu conexión) e inténtalo de nuevo.'); return; }
+  const clean = data.map(row=>{ const r={...row}; delete r.Tipo; return r; });
+  const ws = XLSX.utils.json_to_sheet(clean.length? clean : [{Info:'Sin datos en este período'}]);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, nombre.slice(0,30));
+  XLSX.writeFile(wb, `Ventura - ${nombre} - ${reportState.desde}_a_${reportState.hasta}.xlsx`);
+}
+function exportTodosReportes(pedidos){
+  if(!xlsxAvailable()){ alert('No se pudo cargar el generador de Excel (revisa tu conexión) e inténtalo de nuevo.'); return; }
+  const wb = XLSX.utils.book_new();
+  REPORTES_DEF.forEach(([id,label,fn])=>{
+    const data = fn(pedidos, STATE.egresos).map(row=>{ const r={...row}; delete r.Tipo; return r; });
+    const ws = XLSX.utils.json_to_sheet(data.length? data : [{Info:'Sin datos en este período'}]);
+    XLSX.utils.book_append_sheet(wb, ws, label.slice(0,30));
+  });
+  XLSX.writeFile(wb, `Ventura - Reportes completos - ${reportState.desde}_a_${reportState.hasta}.xlsx`);
+}
+
+function renderReportes(){
+  ensureReportRango();
+  const main = document.getElementById('main');
+  main.appendChild(head('Reportes', 'Análisis de productos, transportadoras, ciudades, clientes y finanzas — exportables a Excel.'));
+
+  const filterBar = document.createElement('div'); filterBar.className='filter-bar';
+  filterBar.innerHTML = `
+    <input type="date" id="rp_desde" value="${reportState.desde}">
+    <span style="color:var(--muted)">→</span>
+    <input type="date" id="rp_hasta" value="${reportState.hasta}">
+    <button class="btn btn-ghost btn-sm" id="rp_aplicar">Aplicar</button>
+    <button class="btn btn-primary btn-sm" id="rp_export_all">⬇ Exportar todo a Excel</button>
+  `;
+  main.appendChild(filterBar);
+
+  const pedidos = STATE.pedidos.filter(p=> !p.fecha || (p.fecha>=reportState.desde && p.fecha<=reportState.hasta));
+
+  const tabs = document.createElement('div'); tabs.className='tabs';
+  REPORTES_DEF.forEach(([id,label])=>{
+    const b = document.createElement('button'); b.textContent=label; b.className = reportState.tipo===id?'active':'';
+    b.onclick = ()=>{ reportState.tipo=id; renderMain(); };
+    tabs.appendChild(b);
+  });
+  main.appendChild(tabs);
+
+  const def = REPORTES_DEF.find(d=>d[0]===reportState.tipo);
+  const data = def[2](pedidos, STATE.egresos);
+  const panel = document.createElement('div'); panel.className='panel';
+  const panelHead = document.createElement('div');
+  panelHead.style.cssText = 'display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;';
+  panelHead.innerHTML = `<h2 style="margin:0">${def[1]}</h2>`;
+  const exportOneBtn = document.createElement('button'); exportOneBtn.className='btn btn-ghost btn-sm'; exportOneBtn.textContent='⬇ Exportar esta tabla';
+  panelHead.appendChild(exportOneBtn);
+  panel.appendChild(panelHead);
+
+  const wrap = document.createElement('div'); wrap.className='table-wrap';
+  if(!data.length){
+    wrap.innerHTML = `<div class="empty">No hay datos suficientes en este período para este reporte.</div>`;
+  } else if(reportState.tipo==='financiero'){
+    let rows = data.map(r=>`<tr><td>${r.Rubro}</td><td style="text-align:right; font-weight:600; color:${r.Valor<0?'var(--red)':'var(--ink)'}">${r.Tipo==='pct'? pct(r.Valor) : money(r.Valor)}</td></tr>`).join('');
+    wrap.innerHTML = `<table><tbody>${rows}</tbody></table>`;
+  } else {
+    const cols = Object.keys(data[0]);
+    const rows = data.map(row=>`<tr>${cols.map(c=>{
+      const v = row[c];
+      const isPctCol = c.includes('%');
+      const isMoneyCol = !isPctCol && typeof v === 'number' && /facturaci|costo|ganancia|ticket/i.test(c);
+      return `<td>${isPctCol? pct(v) : isMoneyCol? money(v) : v}</td>`;
+    }).join('')}</tr>`).join('');
+    wrap.innerHTML = `<table><thead><tr>${cols.map(c=>`<th>${c}</th>`).join('')}</tr></thead><tbody>${rows}</tbody></table>`;
+  }
+  panel.appendChild(wrap);
+  main.appendChild(panel);
+
+  setTimeout(()=>{
+    document.getElementById('rp_aplicar').onclick = ()=>{
+      reportState.desde = document.getElementById('rp_desde').value || reportState.desde;
+      reportState.hasta = document.getElementById('rp_hasta').value || reportState.hasta;
+      renderMain();
+    };
+    document.getElementById('rp_export_all').onclick = ()=>exportTodosReportes(pedidos);
+    exportOneBtn.onclick = ()=>exportReporte(def[1], data);
   },0);
 }
 
