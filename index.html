@@ -156,6 +156,8 @@
   .empty{padding:34px 10px; text-align:center; color:var(--muted-2);}
 
   .pill{padding:3px 9px; border-radius:20px; font-size:11px; font-weight:600; display:inline-block;}
+  select.sel-estado{min-width:132px;}
+  select.sel-producto{min-width:180px;}
   .pill.entregado{background:rgba(47,158,110,0.13); color:var(--green);}
   .pill.transito{background:rgba(62,126,166,0.14); color:var(--blue);}
   .pill.confirmado{background:rgba(184,122,33,0.14); color:var(--gold);}
@@ -427,7 +429,7 @@ const NAV = [
   {id:'pedidos', label:'Pedidos'},
   {id:'seguimiento', label:'Seguimiento'},
   {id:'productos', label:'Productos'},
-  {id:'envios', label:'Envíos por ciudad'},
+  {id:'envios', label:'Costos de envíos por ciudad'},
   {id:'finanzas', label:'Finanzas'},
   {id:'reportes', label:'Reportes'},
   {id:'calculadora', label:'Calculadora de rentabilidad'},
@@ -1151,7 +1153,7 @@ function renderPedidos(){
     status.textContent = ok ? 'Guardado.' : 'No se pudo guardar.';
     status.style.color = ok ? 'var(--green)' : 'var(--red)';
     if(ok && p.ciudad && p.transportadora && parseNum(p.costoEnvio)>0){
-      upsertEnvio(p.ciudad, p.transportadora, parseNum(p.costoEnvio));
+      upsertEnvio(p.ciudad, p.transportadora, p.precioVenta, parseNum(p.costoEnvio));
     }
     renderMain();
   };
@@ -1167,26 +1169,32 @@ function renderPedidos(){
         ? '<option value="">Selecciona...</option>' + ciudades.map(c=>`<option>${c}</option>`).join('')
         : '<option value="">Elige provincia primero</option>';
     };
-    const prodSel = document.getElementById('pf_producto');
-    if(prodSel){
-      prodSel.onchange = (e)=>{
-        const prod = findProducto(e.target.value);
-        if(prod){
-          document.getElementById('pf_precioVenta').value = prod.precioVenta || '';
-          document.getElementById('pf_costoProducto').value = prod.costoProducto || '';
-        }
-      };
-    }
     const autoEnvio = ()=>{
       const ciudadVal = document.getElementById('pf_ciudad').value;
       const transVal = document.getElementById('pf_transportadora').value;
+      const valorVal = document.getElementById('pf_precioVenta').value;
       const envioInput = document.getElementById('pf_costoEnvio');
       if(!ciudadVal || envioInput.value) return;
-      const match = findEnvioCosto(ciudadVal, transVal);
+      const match = findEnvioCosto(ciudadVal, transVal, valorVal);
       if(match) envioInput.value = match.costo;
     };
+    const prodSel = document.getElementById('pf_producto');
+    const applyPricing = ()=>{
+      const prod = findProducto(prodSel.value);
+      if(!prod) return;
+      const cantidadVal = document.getElementById('pf_cantidad').value;
+      const {precioVenta, costoProducto} = scaledPricing(prod, cantidadVal);
+      document.getElementById('pf_precioVenta').value = precioVenta;
+      document.getElementById('pf_costoProducto').value = costoProducto;
+      autoEnvio();
+    };
+    if(prodSel){
+      prodSel.onchange = applyPricing;
+      document.getElementById('pf_cantidad').addEventListener('input', applyPricing);
+    }
     document.getElementById('pf_ciudad').addEventListener('change', autoEnvio);
     document.getElementById('pf_transportadora').addEventListener('change', autoEnvio);
+    document.getElementById('pf_precioVenta').addEventListener('change', autoEnvio);
   },0);
 
   // Import XLSX / CSV
@@ -1228,6 +1236,10 @@ function renderPedidos(){
         if(catalogo) autocompletados++;
         const estadoRaw = iEstado>-1 ? String(row[iEstado]||'').trim() : '';
         const estado = estadoRaw==='Cancelado' ? 'Cancelado' : 'Pendiente';
+        const pricing = catalogo ? scaledPricing(catalogo, 1) : {precioVenta:'', costoProducto:''};
+        const transportadoraGuess = '';
+        const envioMatch = findEnvioCosto(ciudad, transportadoraGuess, pricing.precioVenta);
+        const costoEnvioFinal = envioMatch ? envioMatch.costo : '';
         STATE.pedidos.push({
           id: uid(),
           fecha: iFecha>-1 ? parseAnyDate(row[iFecha]) : '',
@@ -1236,9 +1248,9 @@ function renderPedidos(){
           provincia, ciudad,
           producto: catalogo ? catalogo.nombre : rawProducto,
           cantidad: 1,
-          precioVenta: catalogo ? catalogo.precioVenta : '',
-          costoProducto: catalogo ? catalogo.costoProducto : '',
-          costoEnvio: '', transportadora: '', guia: '', estado,
+          precioVenta: pricing.precioVenta,
+          costoProducto: pricing.costoProducto,
+          costoEnvio: costoEnvioFinal, transportadora: transportadoraGuess, guia: '', estado,
           origen: iOrigen>-1 ? String(row[iOrigen]||'').trim() : '',
           email:'', direccion:''
         });
@@ -1256,6 +1268,13 @@ function renderPedidos(){
         const val = (i)=> i>-1 && row[i]!==undefined && row[i]!==null ? String(row[i]).trim() : '';
         const rawCiudad = iCiudad>-1 ? row[iCiudad] : '';
         const {provincia, ciudad} = findProvinciaCiudad(rawCiudad);
+        const transportadora = val(iTrans);
+        const precioVenta = val(iPrecio);
+        let costoEnvio = val(iEnvio);
+        if(!costoEnvio){
+          const envioMatch = findEnvioCosto(ciudad, transportadora, precioVenta);
+          if(envioMatch) costoEnvio = envioMatch.costo;
+        }
         STATE.pedidos.push({
           id: uid(),
           fecha: iFecha>-1 ? parseAnyDate(row[iFecha]) : '',
@@ -1264,9 +1283,9 @@ function renderPedidos(){
           provincia, ciudad,
           producto: val(iProd),
           cantidad: val(iUd) || 1,
-          precioVenta: val(iPrecio),
-          costoProducto: '', costoEnvio: val(iEnvio),
-          transportadora: val(iTrans),
+          precioVenta,
+          costoProducto: '', costoEnvio,
+          transportadora,
           guia: val(iTracking),
           estado: (iEstado>-1 && ESTADOS.includes(val(iEstado))) ? val(iEstado) : 'Pendiente',
           email: val(iEmail), direccion: val(iDir)
@@ -1274,6 +1293,14 @@ function renderPedidos(){
         added++;
       }
     }
+    // Aprender costos de envío de todo lo que traiga ciudad + transportadora + costo real
+    let enviosNuevos = 0;
+    STATE.pedidos.slice(-added).forEach(p=>{
+      if(p.ciudad && p.transportadora && parseNum(p.costoEnvio)>0){
+        if(upsertEnvioLocal(p.ciudad, p.transportadora, p.precioVenta, parseNum(p.costoEnvio))) enviosNuevos++;
+      }
+    });
+    if(enviosNuevos) await saveList(KEYS.envios, STATE.envios);
     const ok = await saveList(KEYS.pedidos, STATE.pedidos);
     importStatus.textContent = ok
       ? `Importados ${added} pedidos${autocompletados ? ` (${autocompletados} con precio/costo autocompletado desde tu catálogo de Productos)` : ''}.`
@@ -1355,10 +1382,10 @@ function renderPedidos(){
     wrap.innerHTML = `<div class="empty">No hay pedidos que coincidan con esta pestaña o filtro.</div>`;
   } else {
     let rows = '';
-    list.slice().reverse().forEach(p=>{
+    [...list].sort((a,b)=> (b.fecha||'').localeCompare(a.fecha||'')).forEach(p=>{
       const matchesCatalog = p.producto && findProducto(p.producto);
       const prodOptions = STATE.productos.map(pr=>`<option value="${pr.nombre}" ${p.producto===pr.nombre?'selected':''}>${pr.nombre}</option>`).join('');
-      const prodSelectHtml = `<select data-producto-row="${p.id}">
+      const prodSelectHtml = `<select class="sel-producto" data-producto-row="${p.id}">
           <option value="">${STATE.productos.length? 'Selecciona...' : 'No hay productos'}</option>
           ${(!matchesCatalog && p.producto) ? `<option value="${p.producto}" selected>⚠ ${p.producto} (no coincide)</option>` : ''}
           ${prodOptions}
@@ -1366,7 +1393,7 @@ function renderPedidos(){
       rows += `<tr>
         <td>${p.fecha||'—'}</td>
         <td>${p.guia||'—'}</td>
-        <td><select data-estado-row="${p.id}">${ESTADOS.map(e=>`<option ${p.estado===e?'selected':''}>${e}</option>`).join('')}</select></td>
+        <td><select class="sel-estado" data-estado-row="${p.id}">${ESTADOS.map(e=>`<option ${p.estado===e?'selected':''}>${e}</option>`).join('')}</select></td>
         <td>${p.transportadora||'—'}</td>
         <td>${p.cliente||'—'}</td>
         <td>${prodSelectHtml}</td>
@@ -1409,7 +1436,10 @@ function renderPedidos(){
         if(!p) return;
         p.producto = e.target.value;
         const catalogo = findProducto(e.target.value);
-        if(catalogo){ p.precioVenta = catalogo.precioVenta; p.costoProducto = catalogo.costoProducto; }
+        if(catalogo){
+          const {precioVenta, costoProducto} = scaledPricing(catalogo, p.cantidad);
+          p.precioVenta = precioVenta; p.costoProducto = costoProducto;
+        }
         await saveList(KEYS.pedidos, STATE.pedidos);
         renderMain();
       };
@@ -1421,7 +1451,7 @@ function renderPedidos(){
         p.costoEnvio = e.target.value;
         await saveList(KEYS.pedidos, STATE.pedidos);
         if(p.ciudad && p.transportadora && parseNum(p.costoEnvio)>0){
-          await upsertEnvio(p.ciudad, p.transportadora, parseNum(p.costoEnvio));
+          await upsertEnvio(p.ciudad, p.transportadora, p.precioVenta, parseNum(p.costoEnvio));
         }
         renderMain();
       };
@@ -1579,18 +1609,34 @@ function renderSeguimiento(){
 
 /* ================= PRODUCTOS ================= */
 function findProducto(nombre){ return STATE.productos.find(p=>p.nombre===nombre); }
-function findEnvioCosto(ciudad, transportadora){
-  if(!ciudad) return null;
-  let match = STATE.envios.find(e=>e.ciudad===ciudad && e.transportadora===transportadora);
-  if(match) return match;
-  match = STATE.envios.find(e=>e.ciudad===ciudad);
-  return match || null;
+function scaledPricing(catalogo, cantidad){
+  const qty = Math.max(1, parseNum(cantidad) || 1);
+  return {
+    precioVenta: (parseNum(catalogo.precioVenta)*qty).toFixed(2),
+    costoProducto: (parseNum(catalogo.costoProducto)*qty).toFixed(2)
+  };
 }
-async function upsertEnvio(ciudad, transportadora, costo){
-  if(!ciudad || !transportadora || !costo) return;
-  let e = STATE.envios.find(x=>x.ciudad===ciudad && x.transportadora===transportadora);
-  if(e){ e.costo = costo; } else { STATE.envios.push({id:uid(), ciudad, transportadora, costo}); }
-  await saveList(KEYS.envios, STATE.envios);
+function findEnvioCosto(ciudad, transportadora, valor){
+  if(!ciudad) return null;
+  const v = parseNum(valor);
+  let m;
+  if(transportadora && v) m = STATE.envios.find(e=>e.ciudad===ciudad && e.transportadora===transportadora && Number(e.valor)===v);
+  if(!m && v) m = STATE.envios.find(e=>e.ciudad===ciudad && Number(e.valor)===v);
+  if(!m && transportadora) m = STATE.envios.find(e=>e.ciudad===ciudad && e.transportadora===transportadora);
+  if(!m) m = STATE.envios.find(e=>e.ciudad===ciudad);
+  return m || null;
+}
+function upsertEnvioLocal(ciudad, transportadora, valor, costo){
+  if(!ciudad || !transportadora || !(parseNum(costo)>0)) return false;
+  const v = parseNum(valor)||0;
+  let e = STATE.envios.find(x=>x.ciudad===ciudad && x.transportadora===transportadora && Number(x.valor)===v);
+  if(e){ if(Number(e.costo)===parseNum(costo)) return false; e.costo = parseNum(costo); }
+  else { STATE.envios.push({id:uid(), ciudad, transportadora, valor:v, costo:parseNum(costo)}); }
+  return true;
+}
+async function upsertEnvio(ciudad, transportadora, valor, costo){
+  const changed = upsertEnvioLocal(ciudad, transportadora, valor, costo);
+  if(changed) await saveList(KEYS.envios, STATE.envios);
 }
 
 function renderProductos(){
@@ -1625,7 +1671,7 @@ function renderProductos(){
 
   const tablePanel = document.createElement('div'); tablePanel.className='panel';
   tablePanel.innerHTML = `<h2>Catálogo (${STATE.productos.length})</h2>
-    <p class="hint">El "margen bruto" es solo precio − costo de producto. Todavía NO resta el envío, porque el envío cambia según la ciudad (lo ves en "Envíos por ciudad"). Tu ganancia real por pedido, ya con envío descontado, se calcula en Dashboard, Estadísticas y Pedidos.</p>`;
+    <p class="hint">El "margen bruto" es solo precio − costo de producto. Todavía NO resta el envío, porque el envío cambia según la ciudad (lo ves en "Costos de envíos por ciudad"). Tu ganancia real por pedido, ya con envío descontado, se calcula en Dashboard, Estadísticas y Pedidos.</p>`;
   const wrap = document.createElement('div'); wrap.className='table-wrap';
   if(STATE.productos.length===0){
     wrap.innerHTML = `<div class="empty">Aún no agregas productos. Agrégalos aquí para que aparezcan como lista desplegable en Pedidos.</div>`;
@@ -1657,11 +1703,11 @@ function renderProductos(){
 /* ================= COSTOS Y PROVEEDORES ================= */
 function renderEnvios(){
   const main = document.getElementById('main');
-  main.appendChild(head('Envíos por ciudad', 'Registro de cuánto cobra cada transportadora según la ciudad — para que Pedidos autocomplete el costo de envío solo.'));
+  main.appendChild(head('Costos de envíos por ciudad', 'Registro de cuánto cobra cada transportadora según la ciudad y el valor del pedido — para que Pedidos autocomplete el costo de envío solo.'));
 
   const formPanel = document.createElement('div'); formPanel.className='panel';
   formPanel.innerHTML = `<h2>Registrar / actualizar costo de envío</h2>
-    <p class="hint">Cada vez que guardas un pedido con ciudad, transportadora y costo de envío, esto se registra aquí solo. También puedes agregarlo o corregirlo directamente.</p>`;
+    <p class="hint">Una misma ciudad puede tener distinto costo de envío según el valor que se envía (cobro contra entrega). Cada vez que guardas o importas un pedido con ciudad, transportadora, valor y costo de envío, esto se registra aquí solo. También puedes agregarlo o corregirlo directamente.</p>`;
   const grid = document.createElement('div'); grid.className='form-grid';
   const provField = document.createElement('div'); provField.className='field';
   provField.innerHTML = `<label>Provincia</label><select id="ef_provincia"><option value="">Selecciona...</option>${Object.keys(PROVINCIAS_ECUADOR).map(p=>`<option>${p}</option>`).join('')}</select>`;
@@ -1672,6 +1718,9 @@ function renderEnvios(){
   const transField = document.createElement('div'); transField.className='field';
   transField.innerHTML = `<label>Transportadora</label><select id="ef_transportadora"><option value="">Selecciona...</option>${TRANSPORTADORAS.map(t=>`<option>${t}</option>`).join('')}</select>`;
   grid.appendChild(transField);
+  const valorField = document.createElement('div'); valorField.className='field';
+  valorField.innerHTML = `<label>Valor del pedido</label><input id="ef_valor" type="number" step="0.01">`;
+  grid.appendChild(valorField);
   const costoField = document.createElement('div'); costoField.className='field';
   costoField.innerHTML = `<label>Costo de envío</label><input id="ef_costo" type="number" step="0.01">`;
   grid.appendChild(costoField);
@@ -1682,9 +1731,10 @@ function renderEnvios(){
   btn.onclick = async ()=>{
     const ciudad = document.getElementById('ef_ciudad').value;
     const transportadora = document.getElementById('ef_transportadora').value;
+    const valor = document.getElementById('ef_valor').value;
     const costo = parseNum(document.getElementById('ef_costo').value);
     if(!ciudad || !transportadora || !costo){ status.textContent='Completa ciudad, transportadora y costo.'; status.style.color='var(--red)'; return; }
-    await upsertEnvio(ciudad, transportadora, costo);
+    await upsertEnvio(ciudad, transportadora, valor, costo);
     status.textContent = 'Guardado.'; status.style.color='var(--green)';
     renderMain();
   };
@@ -1706,14 +1756,14 @@ function renderEnvios(){
   tablePanel.innerHTML = `<h2>Costos registrados (${STATE.envios.length})</h2>`;
   const wrap = document.createElement('div'); wrap.className='table-wrap';
   if(STATE.envios.length===0){
-    wrap.innerHTML = `<div class="empty">Aún no hay costos de envío registrados. Se irán llenando solos a medida que cargues pedidos con costo de envío, o agrégalos manualmente arriba.</div>`;
+    wrap.innerHTML = `<div class="empty">Aún no hay costos de envío registrados. Se irán llenando solos a medida que cargues o importes pedidos con costo de envío, o agrégalos manualmente arriba.</div>`;
   } else {
     let rows='';
     STATE.envios.slice().reverse().forEach(e=>{
-      rows += `<tr><td>${e.ciudad}</td><td>${e.transportadora}</td><td>${money(e.costo)}</td>
+      rows += `<tr><td>${e.ciudad}</td><td>${e.transportadora}</td><td>${money(e.valor||0)}</td><td>${money(e.costo)}</td>
         <td><button class="btn btn-danger btn-sm" data-dele="${e.id}">Eliminar</button></td></tr>`;
     });
-    wrap.innerHTML = `<table><thead><tr><th>Ciudad</th><th>Transportadora</th><th>Costo de envío</th><th></th></tr></thead><tbody>${rows}</tbody></table>`;
+    wrap.innerHTML = `<table><thead><tr><th>Ciudad</th><th>Transportadora</th><th>Valor</th><th>Costo de envío</th><th></th></tr></thead><tbody>${rows}</tbody></table>`;
   }
   tablePanel.appendChild(wrap);
   main.appendChild(tablePanel);
