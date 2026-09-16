@@ -323,7 +323,7 @@ function parseAnyDate(val){
 }
 
 /* ---------- storage helpers (Google Sheets vía Apps Script) ---------- */
-const KEYS = { pedidos:'ventura:pedidos', compras:'ventura:compras', egresos:'ventura:egresos', config:'ventura:config', productos:'ventura:productos', envios:'ventura:envios' };
+const KEYS = { pedidos:'ventura:pedidos', pedidosBackup:'ventura:pedidos:respaldo-dropi', compras:'ventura:compras', egresos:'ventura:egresos', config:'ventura:config', productos:'ventura:productos', envios:'ventura:envios' };
 const API_URL_KEY = 'venturaApiUrl';
 function getApiUrl(){ return localStorage.getItem(API_URL_KEY) || ''; }
 function setApiUrl(u){ localStorage.setItem(API_URL_KEY, u.trim()); }
@@ -492,7 +492,10 @@ function computeMetrics(pedidos, compras, egresos){
   const novedad = pedidos.filter(p=>['Devuelto','Cancelado'].includes(p.estado));
   const noConfirmados = total - confirmados;
 
-  const facturacionTotal = pedidos.reduce((s,p)=>s+parseNum(p.precioVenta),0);
+  // Dropi excluye CANCELADO y RECHAZADO de «Total vendido», pero los conserva
+  // en «Pedidos generados». Su export sí incluye ambos importes.
+  const pedidosVendidos = pedidos.filter(p=>!['CANCELADO','RECHAZADO'].includes(p.estadoDropi));
+  const facturacionTotal = pedidosVendidos.reduce((s,p)=>s+parseNum(p.precioVenta),0);
   const facturacionEntregada = entregados.reduce((s,p)=>s+parseNum(p.precioVenta),0);
   const facturacionTransito = enTransito.reduce((s,p)=>s+parseNum(p.precioVenta),0);
   const facturacionNovedad = novedad.reduce((s,p)=>s+parseNum(p.precioVenta),0);
@@ -505,7 +508,10 @@ function computeMetrics(pedidos, compras, egresos){
   const gastoOtros = egresos.filter(e=>e.tipo==='Otro').reduce((s,e)=>s+parseNum(e.monto),0);
   const gastoCompras = compras.reduce((s,c)=>s+parseNum(c.total),0);
 
-  const utilidadNeta = facturacionEntregada - costoProductoEntregado - costoEnvioEntregado - gastoAds - gastoOtros;
+  const hayDatosDropi = pedidos.some(p=>p.dropiId);
+  const utilidadDropi = pedidos.reduce((s,p)=>s+parseNum(p.gananciaDropi),0);
+  const utilidadEstimadaDropi = pedidosVendidos.reduce((s,p)=>s+parseNum(p.precioVenta)-parseNum(p.costoProducto)-parseNum(p.costoEnvio),0);
+  const utilidadNeta = hayDatosDropi ? utilidadDropi : facturacionEntregada - costoProductoEntregado - costoEnvioEntregado - gastoAds - gastoOtros;
   const pctConfirmacion = total ? (confirmados/total*100) : 0;
   const pctEntrega = confirmados ? (entregados.length/confirmados*100) : 0;
   const ticketMedio = total ? (facturacionTotal/total) : 0;
@@ -515,7 +521,7 @@ function computeMetrics(pedidos, compras, egresos){
   return { total, confirmados, despachados, entregadosN:entregados.length, devueltos, cancelados, noConfirmados,
     facturacionTotal, facturacionEntregada, facturacionTransito, facturacionNovedad,
     costoProductoEntregado, costoEnvioEntregado, utilidadTransito, gastoAds, gastoOtros, gastoCompras,
-    utilidadNeta, pctConfirmacion, pctEntrega, ticketMedio, conversionTotal, perdidaConfirmacion };
+    utilidadNeta, utilidadDropi, utilidadEstimadaDropi, hayDatosDropi, pctConfirmacion, pctEntrega, ticketMedio, conversionTotal, perdidaConfirmacion };
 }
 
 /* ---------- gráfica de líneas simple en SVG ---------- */
@@ -662,7 +668,7 @@ function renderDashboard(){
     };
   },0);
 
-  const pedidosPeriodo = STATE.pedidos.filter(p=> !p.fecha || (p.fecha>=dashState.desde && p.fecha<=dashState.hasta));
+  const pedidosPeriodo = STATE.pedidos.filter(p=>p.fecha && p.fecha>=dashState.desde && p.fecha<=dashState.hasta);
   const mp = computeMetrics(pedidosPeriodo, STATE.compras, STATE.egresos); // del período
   const mt = computeMetrics(STATE.pedidos, STATE.compras, STATE.egresos); // de toda la cuenta
 
@@ -675,8 +681,9 @@ function renderDashboard(){
       <div class="sub">Ticket medio ${money(mp.ticketMedio)}</div></div>
     <div class="kpi"><div class="kpi-icon c-green">✔️</div><div class="label">Facturado (entregados)</div><div class="value">${money(mp.facturacionEntregada)}</div>
       <div class="sub">${mp.entregadosN} pedidos entregados</div></div>
-    <div class="kpi"><div class="kpi-icon c-gold">$</div><div class="label">Utilidad estimada</div><div class="value ${mp.utilidadNeta>=0?'pos':'neg'}">${money(mp.utilidadNeta)}</div>
-      <div class="sub">${pct(mp.facturacionEntregada? mp.utilidadNeta/mp.facturacionEntregada*100 : 0)} sobre lo entregado</div></div>
+    <div class="kpi"><div class="kpi-icon c-gold">$</div><div class="label">Utilidad estimada${mp.hayDatosDropi?' Dropi':''}</div><div class="value ${(mp.hayDatosDropi?mp.utilidadEstimadaDropi:mp.utilidadNeta)>=0?'pos':'neg'}">${money(mp.hayDatosDropi?mp.utilidadEstimadaDropi:mp.utilidadNeta)}</div>
+      <div class="sub">${mp.hayDatosDropi?'Ventas menos proveedor y flete':'Sobre pedidos entregados'}</div></div>
+    ${mp.hayDatosDropi?`<div class="kpi"><div class="kpi-icon c-green">$</div><div class="label">Utilidad realizada Dropi</div><div class="value">${money(mp.utilidadDropi)}</div><div class="sub">Suma de ganancia reportada por Dropi</div></div>`:''}
   `;
   main.appendChild(kpis1);
 
@@ -1095,64 +1102,104 @@ function mapProductoDropi(rawProducto, cantidad){
   return catalogo ? catalogo.nombre : titleCase(rawProducto);
 }
 
-async function processDropiSync(rows){
-  const headerRow = (rows[0]||[]).map(h=>String(h||'').trim());
-  const idx = (name)=>headerRow.indexOf(name);
-  const iFecha=idx('FECHA'), iCliente=idx('NOMBRE CLIENTE'), iEstado=idx('ESTATUS'),
-    iTrans=idx('TRANSPORTADORA'), iCiudad=idx('CIUDAD DESTINO'), iProd=idx('PRODUCTO'),
-    iCant=idx('CANTIDAD'), iTotal=idx('TOTAL DE LA ORDEN'), iCostoProv=idx('PRECIO PROVEEDOR X CANTIDAD'),
-    iFlete=idx('PRECIO FLETE');
-  if(iCliente<0 || iEstado<0 || iTotal<0) return { error:true };
-
-  const seenKeys = new Set();
-  let fechas = [];
-  let actualizados = 0, nuevos = 0;
-
-  for(let r=1;r<rows.length;r++){
-    const row = rows[r]; if(!row) continue;
-    const clienteRaw = String(row[iCliente]||'').trim();
-    if(!clienteRaw) continue;
-    const fecha = iFecha>-1 ? parseAnyDate(row[iFecha]) : '';
-    if(fecha) fechas.push(fecha);
-    const key = normCliente(clienteRaw)+'|'+fecha;
-    seenKeys.add(key);
-
-    const cantidad = iCant>-1 ? (parseNum(row[iCant])||1) : 1;
-    const {provincia, ciudad} = findProvinciaCiudad(iCiudad>-1 ? row[iCiudad] : '');
-    const producto = iProd>-1 ? mapProductoDropi(row[iProd], cantidad) : '';
-    const estado = mapEstadoDropiExport(iEstado>-1 ? row[iEstado] : '');
-    const transportadora = iTrans>-1 ? mapTransportadoraDropi(row[iTrans]) : '';
-    const precioVenta = iTotal>-1 ? parseNum(row[iTotal]) : '';
-    const costoProducto = iCostoProv>-1 ? parseNum(row[iCostoProv]) : '';
-    const costoEnvio = iFlete>-1 ? parseNum(row[iFlete]) : '';
-
-    const existing = STATE.pedidos.find(p=> normCliente(p.cliente)===normCliente(clienteRaw) && p.fecha===fecha);
-    if(existing){
-      existing.estado = estado; existing.transportadora = transportadora; existing.producto = producto;
-      existing.precioVenta = precioVenta; existing.costoProducto = costoProducto; existing.costoEnvio = costoEnvio;
-      existing.ciudad = ciudad; existing.provincia = provincia; existing.cantidad = cantidad;
-      actualizados++;
-    } else {
-      STATE.pedidos.push({
-        id: uid(), fecha, cliente: clienteRaw, telefono:'', provincia, ciudad,
-        producto, cantidad, precioVenta, costoProducto, costoEnvio,
-        transportadora, guia:'', estado, email:'', direccion:''
-      });
-      nuevos++;
-    }
+function prepareDropiSync(orderRows, productRows){
+  const orderHead = (orderRows[0]||[]).map(h=>String(h||'').trim().toUpperCase());
+  const productHead = (productRows[0]||[]).map(h=>String(h||'').trim().toUpperCase());
+  const requiredOrders = ['ID','FECHA','NOMBRE CLIENTE','ESTATUS','VALOR DE COMPRA EN PRODUCTOS','TOTAL EN PRECIOS DE PROVEEDOR','PRECIO FLETE'];
+  const requiredProducts = ['ID','PRODUCTO','CANTIDAD'];
+  if(requiredOrders.some(h=>!orderHead.includes(h)) || requiredProducts.some(h=>!productHead.includes(h))){
+    return {error:'Las columnas no corresponden a los exportes de órdenes y productos de Dropi.'};
   }
-
-  const minF = fechas.length ? fechas.reduce((a,b)=>a<b?a:b) : null;
-  const maxF = fechas.length ? fechas.reduce((a,b)=>a>b?a:b) : null;
-  const noEncontrados = STATE.pedidos.filter(p=>{
-    if(!p.fecha || !p.cliente) return false;
-    if(minF && (p.fecha<minF || p.fecha>maxF)) return false;
-    const key = normCliente(p.cliente)+'|'+p.fecha;
-    return !seenKeys.has(key);
-  });
-
-  await saveList(KEYS.pedidos, STATE.pedidos);
-  return { actualizados, nuevos, noEncontrados };
+  const cell = (head,row,key)=>row[head.indexOf(key)];
+  const orderMap = new Map();
+  for(const row of orderRows.slice(1)){
+    const id = String(cell(orderHead,row,'ID')||'').trim();
+    if(!id) continue;
+    if(orderMap.has(id)) return {error:`El ID ${id} aparece dos veces en el archivo de órdenes.`};
+    const fecha = parseAnyDate(cell(orderHead,row,'FECHA'));
+    if(!fecha) return {error:`El pedido ${id} no tiene una fecha válida.`};
+    orderMap.set(id,{row,fecha});
+  }
+  if(!orderMap.size) return {error:'El archivo de órdenes está vacío.'};
+  const productMap = new Map();
+  for(const row of productRows.slice(1)){
+    const id = String(cell(productHead,row,'ID')||'').trim();
+    if(!id) continue;
+    if(!orderMap.has(id)) return {error:`El desglose contiene el pedido ${id}, ausente en el archivo principal.`};
+    if(!productMap.has(id)) productMap.set(id,[]);
+    productMap.get(id).push(row);
+  }
+  const fechas = [...orderMap.values()].map(x=>x.fecha).sort();
+  const minF=fechas[0], maxF=fechas[fechas.length-1];
+  const used = new Set(), result=[];
+  let matched=0;
+  const missingProductOrders=[];
+  for(const [id,{row,fecha}] of orderMap){
+    const cliente = String(cell(orderHead,row,'NOMBRE CLIENTE')||'').trim();
+    if(!cliente) return {error:`El pedido ${id} no tiene nombre de cliente.`};
+    const ciudadRaw = String(cell(orderHead,row,'CIUDAD DESTINO')||'').trim();
+    const {provincia,ciudad} = findProvinciaCiudad(ciudadRaw);
+    let existing = STATE.pedidos.find(p=>String(p.dropiId||'')===id && !used.has(p.id));
+    if(!existing){
+      const candidates=STATE.pedidos.filter(p=>!p.dropiId && !used.has(p.id) &&
+        normCliente(p.cliente)===normCliente(cliente) &&
+        normStr(p.ciudad)===normStr(ciudad) && p.fecha &&
+        Math.abs(new Date(p.fecha+'T00:00:00')-new Date(fecha+'T00:00:00'))<=3*86400000);
+      if(candidates.length===1) existing=candidates[0];
+    }
+    if(existing){ used.add(existing.id); matched++; }
+    const items = productMap.get(id)||[];
+    const productNames=items.map(x=>{
+      const name=String(cell(productHead,x,'PRODUCTO')||'').trim();
+      const variant=String(cell(productHead,x,'VARIACION')||'').trim();
+      const qty=parseNum(cell(productHead,x,'CANTIDAD'));
+      return `${qty} × ${name}${variant?' ('+variant+')':''}`;
+    });
+    if(!items.length) missingProductOrders.push(id);
+    const rawStatus=String(cell(orderHead,row,'ESTATUS')||'').trim();
+    const guideIndex=orderHead.findIndex(h=>h.includes('MERO GUIA'));
+    const phoneIndex=orderHead.findIndex(h=>h.includes('FONO'));
+    result.push({
+      ...(existing||{}), id:existing?.id||uid(), dropiId:id, fecha, cliente,
+      telefono:phoneIndex>=0?normalizePhoneRaw(row[phoneIndex]):(existing?.telefono||''),
+      email:String(cell(orderHead,row,'EMAIL')||existing?.email||''),
+      direccion:String(cell(orderHead,row,'DIRECCION')||existing?.direccion||''),
+      provincia, ciudad:ciudad||ciudadRaw,
+      producto:items.length?productNames.join(' + '):(existing?.producto||''),
+      productoPendiente:!items.length,
+      cantidad:items.length?items.reduce((s,x)=>s+parseNum(cell(productHead,x,'CANTIDAD')),0):'',
+      precioVenta:parseNum(cell(orderHead,row,'VALOR DE COMPRA EN PRODUCTOS')),
+      costoProducto:parseNum(cell(orderHead,row,'TOTAL EN PRECIOS DE PROVEEDOR')),
+      costoEnvio:parseNum(cell(orderHead,row,'PRECIO FLETE')),
+      costoDevolucion:parseNum(cell(orderHead,row,'COSTO DEVOLUCION FLETE')),
+      gananciaDropi:parseNum(cell(orderHead,row,'GANANCIA')),
+      comisionDropi:parseNum(cell(orderHead,row,'COMISION')),
+      transportadora:mapTransportadoraDropi(cell(orderHead,row,'TRANSPORTADORA')),
+      guia:guideIndex>=0?String(row[guideIndex]||'').trim():'',
+      estado:mapEstadoDropiExport(rawStatus), estadoDropi:rawStatus,
+    });
+  }
+  // Conservar sin tocar cualquier registro fuera de la ventana de conciliación.
+  const outside=STATE.pedidos.filter(p=>p.fecha && (p.fecha<'2026-08-18'||p.fecha>'2026-09-16') && !used.has(p.id));
+  const unmatched=STATE.pedidos.filter(p=>!used.has(p.id) && !outside.includes(p));
+  const active=[...outside,...result];
+  const scoped=active.filter(p=>p.fecha>='2026-08-18' && p.fecha<='2026-09-16');
+  const sold=scoped.filter(p=>!['CANCELADO','RECHAZADO'].includes(p.estadoDropi));
+  const round=n=>Math.round(n*100)/100;
+  return {active,unmatched,matched,missingProductOrders,total:scoped.length,
+    sold:round(sold.reduce((s,p)=>s+p.precioVenta,0)),
+    profit:round(scoped.reduce((s,p)=>s+p.gananciaDropi,0)),
+    estimated:round(sold.reduce((s,p)=>s+p.precioVenta-p.costoProducto-p.costoEnvio,0))};
+}
+async function commitDropiSync(preview){
+  const previous=await loadRaw(KEYS.pedidosBackup,null);
+  if(!previous){
+    const backedUp=await saveRaw(KEYS.pedidosBackup,{fecha:new Date().toISOString(),pedidos:STATE.pedidos});
+    if(!backedUp) return false;
+  }
+  const saved=await saveList(KEYS.pedidos,preview.active);
+  if(saved) STATE.pedidos=preview.active;
+  return saved;
 }
 /* ================= PEDIDOS ================= */
 let pedidoFilters = { estado:'', transportadora:'' };
@@ -1420,60 +1467,92 @@ function renderPedidos(){
   importPanel.appendChild(importStatus);
   main.appendChild(importPanel);
 
-  // Sincronizar con export completo de Dropi (actualiza existentes, agrega nuevos, propone eliminar)
+  // Conciliación de los dos exportes de Dropi, con vista previa y respaldo.
   const syncPanel = document.createElement('div'); syncPanel.className='panel';
   syncPanel.innerHTML = `<h2>Sincronizar con export de Dropi</h2>
-    <p class="hint">Para el archivo completo de "órdenes" de Dropi (con columnas NOMBRE CLIENTE, ESTATUS, PRODUCTO, TOTAL DE LA ORDEN, etc). Actualiza fecha, estado, transportadora, producto, precio, costo de proveedor, flete y ciudad de los clientes que ya existen (los identifica por cliente + fecha); agrega los que sean nuevos; y al final te muestra cuáles del período de este archivo ya no aparecen ahí, para que confirmes si se eliminan.</p>`;
-  const syncFileInput = document.createElement('input'); syncFileInput.type='file'; syncFileInput.accept='.xlsx,.xls';
+    <p class="hint">Selecciona el export de «Órdenes» y el de «Órdenes con productos». El ID de Dropi une ambos archivos. Verás una vista previa antes de guardar; el primer respaldo de tus pedidos actuales se conserva para poder restaurarlos.</p>`;
+  const orderLabel=document.createElement('label'); orderLabel.textContent='Órdenes (una fila por pedido)';
+  const syncFileInput=document.createElement('input'); syncFileInput.type='file'; syncFileInput.accept='.xlsx,.xls';
+  const productLabel=document.createElement('label'); productLabel.textContent='Productos (una fila por producto)';
+  const syncProductInput=document.createElement('input'); syncProductInput.type='file'; syncProductInput.accept='.xlsx,.xls';
   const syncStatus = document.createElement('div'); syncStatus.className='note';
-  const syncDeletePanel = document.createElement('div'); syncDeletePanel.style.marginTop='14px';
-  syncFileInput.onchange = (ev)=>{
-    const file = ev.target.files[0]; if(!file) return;
-    const reader = new FileReader();
-    reader.onload = async (e)=>{
+  const syncPreview=document.createElement('div'); syncPreview.style.marginTop='14px';
+  const syncRun=document.createElement('button'); syncRun.className='btn btn-primary btn-sm'; syncRun.textContent='Comparar archivos';
+  const readXlsx=file=>new Promise((resolve,reject)=>{
+    const reader=new FileReader();
+    reader.onload=e=>{
       try{
-        if(typeof XLSX === 'undefined'){ syncStatus.textContent='No se pudo cargar el lector de Excel (revisa tu conexión).'; syncStatus.style.color='var(--red)'; return; }
-        const wb = XLSX.read(e.target.result, {type:'array', cellDates:true});
-        const ws = wb.Sheets[wb.SheetNames[0]];
-        const rows = XLSX.utils.sheet_to_json(ws, {header:1, raw:true, defval:''});
-        const res = await processDropiSync(rows);
-        if(res.error){ syncStatus.textContent='No reconozco las columnas de este archivo.'; syncStatus.style.color='var(--red)'; return; }
-        syncStatus.textContent = `${res.actualizados} pedidos actualizados, ${res.nuevos} agregados.`;
-        syncStatus.style.color = 'var(--green)';
-        if(res.noEncontrados.length){
-          let rowsHtml = '';
-          res.noEncontrados.forEach(p=>{
-            rowsHtml += `<tr><td><input type="checkbox" class="del-check" data-id="${p.id}" checked></td>
-              <td>${p.fecha||'—'}</td><td>${p.cliente||'—'}</td><td>${p.producto||'—'}</td>
-              <td>${money(p.precioVenta)}</td><td><span class="pill ${estadoClass(p.estado)}">${p.estado}</span></td></tr>`;
-          });
-          syncDeletePanel.innerHTML = `
-            <div class="status-msg err">${res.noEncontrados.length} pedidos del período de este archivo ya NO aparecen en él. Revisa y confirma cuáles eliminar:</div>
-            <div class="table-wrap"><table><thead><tr><th></th><th>Fecha</th><th>Cliente</th><th>Producto</th><th>Precio</th><th>Estado</th></tr></thead>
-            <tbody>${rowsHtml}</tbody></table></div>
-            <div style="margin-top:10px">
-              <button class="btn btn-danger btn-sm" id="sync_del_confirm" style="border:1px solid var(--red)">Eliminar seleccionados</button>
-              <button class="btn btn-ghost btn-sm" id="sync_del_cancel">Cancelar</button>
-            </div>`;
-          setTimeout(()=>{
-            document.getElementById('sync_del_confirm').onclick = async ()=>{
-              const ids = [...document.querySelectorAll('.del-check:checked')].map(c=>c.dataset.id);
-              STATE.pedidos = STATE.pedidos.filter(p=>!ids.includes(p.id));
-              await saveList(KEYS.pedidos, STATE.pedidos);
-              renderMain();
-            };
-            document.getElementById('sync_del_cancel').onclick = ()=>{ syncDeletePanel.innerHTML=''; };
-          },0);
-        } else {
-          syncDeletePanel.innerHTML = '';
-        }
-      }catch(err){ syncStatus.textContent = 'No se pudo leer el archivo: ' + err.message; syncStatus.style.color='var(--red)'; }
+        const wb=XLSX.read(e.target.result,{type:'array',cellDates:true});
+        resolve(XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]],{header:1,raw:true,defval:''}));
+      }catch(err){reject(err);}
     };
+    reader.onerror=()=>reject(new Error('No se pudo leer el archivo.'));
     reader.readAsArrayBuffer(file);
+  });
+  syncRun.onclick=async()=>{
+    if(!syncFileInput.files[0]||!syncProductInput.files[0]){
+      syncStatus.textContent='Selecciona los dos archivos de Dropi.'; syncStatus.style.color='var(--red)'; return;
+    }
+    if(typeof XLSX==='undefined'){
+      syncStatus.textContent='No se pudo cargar el lector de Excel.'; syncStatus.style.color='var(--red)'; return;
+    }
+    syncStatus.textContent='Comparando pedidos...'; syncPreview.innerHTML='';
+    try{
+      const [orders,products]=await Promise.all([readXlsx(syncFileInput.files[0]),readXlsx(syncProductInput.files[0])]);
+      const preview=prepareDropiSync(orders,products);
+      if(preview.error){syncStatus.textContent=preview.error;syncStatus.style.color='var(--red)';return;}
+      syncStatus.textContent='Vista previa lista. No se ha modificado ningún pedido.'; syncStatus.style.color='var(--green)';
+      syncPreview.innerHTML=`<div class="status-msg">${preview.total} pedidos · Total vendido ${money(preview.sold)} · Utilidad realizada ${money(preview.profit)} · Utilidad estimada ${money(preview.estimated)}.<br>
+        ${preview.matched} registros de Ventura vinculados con certeza; ${preview.unmatched.length} registros actuales no vinculados quedarán en el respaldo y saldrán del conteo activo. ${preview.missingProductOrders.length} pedido(s) sin desglose de producto en el segundo export.</div>`;
+      for(const id of preview.missingProductOrders){
+        const row=document.createElement('div'); row.className='form-grid';
+        row.innerHTML=`<div class="field"><label>Pedido Dropi ${id}: producto verificado</label><input class="sync-product" data-id="${id}" placeholder="Deja vacío si no está verificado"></div>
+          <div class="field"><label>Cantidad verificada</label><input class="sync-quantity" data-id="${id}" type="number" min="1" step="1"></div>`;
+        syncPreview.appendChild(row);
+      }
+      const confirmBtn=document.createElement('button'); confirmBtn.className='btn btn-primary btn-sm';
+      confirmBtn.textContent='Confirmar conciliación y guardar';
+      confirmBtn.onclick=async()=>{
+        for(const id of preview.missingProductOrders){
+          const name=syncPreview.querySelector(`.sync-product[data-id="${id}"]`).value.trim();
+          const qty=parseNum(syncPreview.querySelector(`.sync-quantity[data-id="${id}"]`).value);
+          if(name && (!Number.isInteger(qty)||qty<1)){
+            syncStatus.textContent=`Indica una cantidad válida para el pedido ${id}.`;syncStatus.style.color='var(--red)';return;
+          }
+          if(name){
+            const p=preview.active.find(x=>x.dropiId===id);
+            p.producto=name; p.cantidad=qty; p.productoPendiente=false; p.productoFuente='Verificado en pedidos de Dropi';
+          }
+        }
+        confirmBtn.disabled=true; syncStatus.textContent='Guardando respaldo y pedidos...';
+        const ok=await commitDropiSync(preview);
+        syncStatus.textContent=ok?'Pedidos conciliados y respaldo guardado.':'No se pudo guardar; los pedidos activos no se cambiaron.';
+        syncStatus.style.color=ok?'var(--green)':'var(--red)';
+        if(ok) renderMain(); else confirmBtn.disabled=false;
+      };
+      syncPreview.appendChild(confirmBtn);
+    }catch(err){syncStatus.textContent='No se pudo leer el archivo: '+err.message;syncStatus.style.color='var(--red)';}
   };
+  syncPanel.appendChild(orderLabel);
   syncPanel.appendChild(syncFileInput);
+  syncPanel.appendChild(productLabel);
+  syncPanel.appendChild(syncProductInput);
+  syncPanel.appendChild(syncRun);
   syncPanel.appendChild(syncStatus);
-  syncPanel.appendChild(syncDeletePanel);
+  syncPanel.appendChild(syncPreview);
+  const restoreBtn=document.createElement('button'); restoreBtn.className='btn btn-ghost btn-sm';
+  restoreBtn.textContent='Restaurar respaldo anterior de pedidos';
+  restoreBtn.onclick=async()=>{
+    const backup=await loadRaw(KEYS.pedidosBackup,null);
+    if(!backup||!Array.isArray(backup.pedidos)){
+      syncStatus.textContent='No hay un respaldo anterior disponible.';syncStatus.style.color='var(--red)';return;
+    }
+    if(!confirm(`¿Restaurar los ${backup.pedidos.length} pedidos del respaldo? Los pedidos conciliados dejarán de estar activos.`)) return;
+    const ok=await saveList(KEYS.pedidos,backup.pedidos);
+    if(ok){STATE.pedidos=backup.pedidos;renderMain();}
+    else {syncStatus.textContent='No se pudo restaurar el respaldo.';syncStatus.style.color='var(--red)';}
+  };
+  syncPanel.appendChild(restoreBtn);
   main.appendChild(syncPanel);
 
   // Pestañas por etapa del pedido
@@ -1493,7 +1572,7 @@ function renderPedidos(){
   main.appendChild(tabsDiv);
 
   const tabSubset = pedidosForTab(pedidoTab);
-  const tabFacturacion = tabSubset.reduce((s,p)=>s+parseNum(p.precioVenta),0);
+  const tabFacturacion = tabSubset.filter(p=>!['CANCELADO','RECHAZADO'].includes(p.estadoDropi)).reduce((s,p)=>s+parseNum(p.precioVenta),0);
   const miniKpi = document.createElement('div'); miniKpi.className='kpi-grid'; miniKpi.style.marginBottom='16px';
   miniKpi.innerHTML = `<div class="kpi"><div class="label">Pedidos en esta pestaña</div><div class="value">${tabSubset.length}</div></div>
     <div class="kpi"><div class="label">Facturación de esta pestaña</div><div class="value">${money(tabFacturacion)}</div></div>`;
@@ -1534,9 +1613,10 @@ function renderPedidos(){
           ${prodOptions}
         </select>`;
       rows += `<tr>
+        <td>${p.dropiId||'—'}</td>
         <td>${p.fecha||'—'}</td>
         <td>${p.guia||'—'}</td>
-        <td><select class="sel-estado" data-estado-row="${p.id}">${ESTADOS.map(e=>`<option ${p.estado===e?'selected':''}>${e}</option>`).join('')}</select></td>
+        <td>${p.estadoDropi ? `<span class="pill ${estadoClass(p.estado)}">${p.estadoDropi.replace(/_/g,' ')}</span>` : `<select class="sel-estado" data-estado-row="${p.id}">${ESTADOS.map(e=>`<option ${p.estado===e?'selected':''}>${e}</option>`).join('')}</select>`}</td>
         <td>${p.transportadora||'—'}</td>
         <td>${p.cliente||'—'}</td>
         <td>${prodSelectHtml}</td>
@@ -1544,13 +1624,14 @@ function renderPedidos(){
         <td>${money(p.precioVenta)}</td>
         <td>${money(p.costoProducto)}</td>
         <td><input type="number" step="0.01" data-envio-row="${p.id}" value="${p.costoEnvio||''}" style="width:88px"></td>
+        <td>${money(p.costoDevolucion)}</td>
         <td>${p.ciudad||'—'}</td>
         <td class="row-actions"><button class="btn btn-danger btn-sm" data-del="${p.id}">Eliminar</button></td>
       </tr>`;
     });
     wrap.innerHTML = `<table><thead><tr>
-      <th>Fecha</th><th>Guía</th><th>Estado</th><th>Transportadora</th><th>Cliente</th>
-      <th>Producto</th><th>Cant.</th><th>Precio</th><th>Costo prod.</th><th>Costo envío</th><th>Ciudad</th><th></th>
+      <th>ID Dropi</th><th>Fecha</th><th>Guía</th><th>Estado Dropi</th><th>Transportadora</th><th>Cliente</th>
+      <th>Producto</th><th>Cant.</th><th>Precio</th><th>Costo prod.</th><th>Costo envío</th><th>Costo devolución</th><th>Ciudad</th><th></th>
     </tr></thead><tbody>${rows}</tbody></table>`;
   }
   tablePanel.appendChild(wrap);
