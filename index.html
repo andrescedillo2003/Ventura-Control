@@ -1567,11 +1567,15 @@ function renderPedidos(){
   syncPanel.appendChild(syncPreview);
   const restoreBtn=document.createElement('button'); restoreBtn.className='btn btn-ghost btn-sm';
   restoreBtn.textContent='Restaurar respaldo anterior de pedidos';
-  restoreBtn.onclick=async()=>{
+  const readBackup=async()=>{
     let backup=await loadRaw(KEYS.pedidosBackup,null);
-    if(!backup){
+    if(!unpackPedidos(backup?.pedidos).length){
       try{backup=JSON.parse(localStorage.getItem(PEDIDOS_BACKUP_LOCAL)||'null');}catch(e){backup=null;}
     }
+    return backup;
+  };
+  restoreBtn.onclick=async()=>{
+    const backup=await readBackup();
     const oldPedidos=unpackPedidos(backup?.pedidos);
     if(!oldPedidos.length){
       syncStatus.textContent='No hay un respaldo anterior disponible.';syncStatus.style.color='var(--red)';return;
@@ -1582,6 +1586,19 @@ function renderPedidos(){
     else {syncStatus.textContent='No se pudo restaurar el respaldo.';syncStatus.style.color='var(--red)';}
   };
   syncPanel.appendChild(restoreBtn);
+  const downloadBackupBtn=document.createElement('button'); downloadBackupBtn.className='btn btn-ghost btn-sm';
+  downloadBackupBtn.textContent='Descargar respaldo de pedidos';
+  downloadBackupBtn.onclick=async()=>{
+    const backup=await readBackup();
+    if(!unpackPedidos(backup?.pedidos).length){
+      syncStatus.textContent='No hay un respaldo disponible para descargar.';syncStatus.style.color='var(--red)';return;
+    }
+    const blob=new Blob([JSON.stringify(backup)],{type:'application/json'});
+    const link=document.createElement('a');link.href=URL.createObjectURL(blob);
+    link.download='Ventura-respaldo-pedidos-antes-de-Dropi.json';
+    link.click();setTimeout(()=>URL.revokeObjectURL(link.href),1000);
+  };
+  syncPanel.appendChild(downloadBackupBtn);
   main.appendChild(syncPanel);
 
   // Pestañas por etapa del pedido
