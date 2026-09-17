@@ -671,6 +671,11 @@ function renderDashboard(){
   const pedidosPeriodo = STATE.pedidos.filter(p=>p.fecha && p.fecha>=dashState.desde && p.fecha<=dashState.hasta);
   const mp = computeMetrics(pedidosPeriodo, STATE.compras, STATE.egresos); // del período
   const mt = computeMetrics(STATE.pedidos, STATE.compras, STATE.egresos); // de toda la cuenta
+  if(mp.hayDatosDropi){
+    const note=document.createElement('p'); note.className='hint';
+    note.textContent='El período usa la fecha de creación del pedido en Dropi. La guía puede generarse uno o más días después; ambas fechas se muestran en Pedidos.';
+    main.appendChild(note);
+  }
 
   // KPI fila 1 (del período)
   const kpis1 = document.createElement('div'); kpis1.className = 'kpi-grid';
@@ -1161,6 +1166,8 @@ function prepareDropiSync(orderRows, productRows){
     const phoneIndex=orderHead.findIndex(h=>h.includes('FONO'));
     result.push({
       ...(existing||{}), id:existing?.id||uid(), dropiId:id, fecha, cliente,
+      horaDropi:String(cell(orderHead,row,'HORA')||'').trim(),
+      fechaGuiaDropi:parseAnyDate(cell(orderHead,row,'FECHA GENERACION DE GUIA')),
       telefono:phoneIndex>=0?normalizePhoneRaw(row[phoneIndex]):(existing?.telefono||''),
       email:String(cell(orderHead,row,'EMAIL')||existing?.email||''),
       direccion:String(cell(orderHead,row,'DIRECCION')||existing?.direccion||''),
@@ -1604,7 +1611,10 @@ function renderPedidos(){
     wrap.innerHTML = `<div class="empty">No hay pedidos que coincidan con esta pestaña o filtro.</div>`;
   } else {
     let rows = '';
-    [...list].sort((a,b)=> (b.fecha||'').localeCompare(a.fecha||'')).forEach(p=>{
+    [...list].sort((a,b)=>{
+      const when=p=>(p.fecha||'')+'T'+(p.horaDropi||'00:00');
+      return when(b).localeCompare(when(a));
+    }).forEach(p=>{
       const matchesCatalog = p.producto && findProducto(p.producto);
       const prodOptions = STATE.productos.map(pr=>`<option value="${pr.nombre}" ${p.producto===pr.nombre?'selected':''}>${pr.nombre}</option>`).join('');
       const prodSelectHtml = `<select class="sel-producto" data-producto-row="${p.id}">
@@ -1614,7 +1624,8 @@ function renderPedidos(){
         </select>`;
       rows += `<tr>
         <td>${p.dropiId||'—'}</td>
-        <td>${p.fecha||'—'}</td>
+        <td>${p.fecha||'—'}${p.horaDropi?' '+p.horaDropi:''}</td>
+        <td>${p.fechaGuiaDropi||'—'}</td>
         <td>${p.guia||'—'}</td>
         <td>${p.estadoDropi ? `<span class="pill ${estadoClass(p.estado)}">${p.estadoDropi.replace(/_/g,' ')}</span>` : `<select class="sel-estado" data-estado-row="${p.id}">${ESTADOS.map(e=>`<option ${p.estado===e?'selected':''}>${e}</option>`).join('')}</select>`}</td>
         <td>${p.transportadora||'—'}</td>
@@ -1630,7 +1641,7 @@ function renderPedidos(){
       </tr>`;
     });
     wrap.innerHTML = `<table><thead><tr>
-      <th>ID Dropi</th><th>Fecha</th><th>Guía</th><th>Estado Dropi</th><th>Transportadora</th><th>Cliente</th>
+      <th>ID Dropi</th><th>Creación en Dropi</th><th>Fecha de guía</th><th>Guía</th><th>Estado Dropi</th><th>Transportadora</th><th>Cliente</th>
       <th>Producto</th><th>Cant.</th><th>Precio</th><th>Costo prod.</th><th>Costo envío</th><th>Costo devolución</th><th>Ciudad</th><th></th>
     </tr></thead><tbody>${rows}</tbody></table>`;
   }
