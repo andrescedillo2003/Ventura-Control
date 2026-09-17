@@ -324,6 +324,7 @@ function parseAnyDate(val){
 
 /* ---------- storage helpers (Google Sheets vía Apps Script) ---------- */
 const KEYS = { pedidos:'ventura:pedidos', pedidosBackup:'ventura:pedidos:respaldo-dropi', compras:'ventura:compras', egresos:'ventura:egresos', config:'ventura:config', productos:'ventura:productos', envios:'ventura:envios' };
+const PEDIDOS_BACKUP_LOCAL = 'ventura:pedidos:respaldo-dropi-local';
 const API_URL_KEY = 'venturaApiUrl';
 function getApiUrl(){ return localStorage.getItem(API_URL_KEY) || ''; }
 function setApiUrl(u){ localStorage.setItem(API_URL_KEY, u.trim()); }
@@ -332,7 +333,7 @@ async function loadRaw(key, fallback){
   try{
     const url = getApiUrl();
     if(!url) return fallback;
-    const res = await fetch(url + '?key=' + encodeURIComponent(key));
+    const res = await fetch(url + '?key=' + encodeURIComponent(key) + '&_=' + Date.now(), {cache:'no-store'});
     const text = await res.text();
     if(!text) return fallback;
     const data = JSON.parse(text);
@@ -352,8 +353,20 @@ async function saveRaw(key, value){
     return !!data.ok;
   }catch(e){ return false; }
 }
-async function loadList(key){ const r = await loadRaw(key, []); return Array.isArray(r) ? r : []; }
-async function saveList(key, arr){ return saveRaw(key, arr); }
+function packPedidos(arr){
+  const columns=[...new Set(arr.flatMap(p=>Object.keys(p)))];
+  return {venturaPedidosVersion:2,columns,rows:arr.map(p=>columns.map(k=>p[k]===undefined?null:p[k]))};
+}
+function unpackPedidos(raw){
+  if(Array.isArray(raw)) return raw;
+  if(raw?.venturaPedidosVersion!==2 || !Array.isArray(raw.columns) || !Array.isArray(raw.rows)) return [];
+  return raw.rows.map(values=>Object.fromEntries(raw.columns.map((key,i)=>[key,values[i]]).filter(([,value])=>value!==null)));
+}
+async function loadList(key){
+  const r=await loadRaw(key,[]);
+  return key===KEYS.pedidos ? unpackPedidos(r) : (Array.isArray(r)?r:[]);
+}
+async function saveList(key,arr){ return saveRaw(key,key===KEYS.pedidos?packPedidos(arr):arr); }
 function uid(){ return Date.now().toString(36) + Math.random().toString(36).slice(2,7); }
 function money(n){
   n = Number(n)||0;
@@ -1199,14 +1212,19 @@ function prepareDropiSync(orderRows, productRows){
     estimated:round(sold.reduce((s,p)=>s+p.precioVenta-p.costoProducto-p.costoEnvio,0))};
 }
 async function commitDropiSync(preview){
+  const backup={fecha:new Date().toISOString(),pedidos:packPedidos(STATE.pedidos)};
+  try{
+    if(!localStorage.getItem(PEDIDOS_BACKUP_LOCAL)) localStorage.setItem(PEDIDOS_BACKUP_LOCAL,JSON.stringify(backup));
+  }catch(e){return false;}
   const previous=await loadRaw(KEYS.pedidosBackup,null);
-  if(!previous){
-    const backedUp=await saveRaw(KEYS.pedidosBackup,{fecha:new Date().toISOString(),pedidos:STATE.pedidos});
-    if(!backedUp) return false;
-  }
+  if(!previous) await saveRaw(KEYS.pedidosBackup,backup);
   const saved=await saveList(KEYS.pedidos,preview.active);
-  if(saved) STATE.pedidos=preview.active;
-  return saved;
+  if(!saved) return false;
+  const verified=await loadList(KEYS.pedidos);
+  if(verified.length!==preview.active.length ||
+     verified.filter(p=>p.dropiId).length!==preview.active.filter(p=>p.dropiId).length) return false;
+  STATE.pedidos=verified;
+  return true;
 }
 /* ================= PEDIDOS ================= */
 let pedidoFilters = { estado:'', transportadora:'' };
@@ -1533,7 +1551,7 @@ function renderPedidos(){
         }
         confirmBtn.disabled=true; syncStatus.textContent='Guardando respaldo y pedidos...';
         const ok=await commitDropiSync(preview);
-        syncStatus.textContent=ok?'Pedidos conciliados y respaldo guardado.':'No se pudo guardar; los pedidos activos no se cambiaron.';
+        syncStatus.textContent=ok?'Pedidos conciliados, verificados en el servidor y respaldo guardado.':'No se pudo verificar el guardado en el servidor. Recarga para comprobar el estado antes de reintentar.';
         syncStatus.style.color=ok?'var(--green)':'var(--red)';
         if(ok) renderMain(); else confirmBtn.disabled=false;
       };
@@ -1550,13 +1568,17 @@ function renderPedidos(){
   const restoreBtn=document.createElement('button'); restoreBtn.className='btn btn-ghost btn-sm';
   restoreBtn.textContent='Restaurar respaldo anterior de pedidos';
   restoreBtn.onclick=async()=>{
-    const backup=await loadRaw(KEYS.pedidosBackup,null);
-    if(!backup||!Array.isArray(backup.pedidos)){
+    let backup=await loadRaw(KEYS.pedidosBackup,null);
+    if(!backup){
+      try{backup=JSON.parse(localStorage.getItem(PEDIDOS_BACKUP_LOCAL)||'null');}catch(e){backup=null;}
+    }
+    const oldPedidos=unpackPedidos(backup?.pedidos);
+    if(!oldPedidos.length){
       syncStatus.textContent='No hay un respaldo anterior disponible.';syncStatus.style.color='var(--red)';return;
     }
-    if(!confirm(`¿Restaurar los ${backup.pedidos.length} pedidos del respaldo? Los pedidos conciliados dejarán de estar activos.`)) return;
-    const ok=await saveList(KEYS.pedidos,backup.pedidos);
-    if(ok){STATE.pedidos=backup.pedidos;renderMain();}
+    if(!confirm(`¿Restaurar los ${oldPedidos.length} pedidos del respaldo? Los pedidos conciliados dejarán de estar activos.`)) return;
+    const ok=await saveList(KEYS.pedidos,oldPedidos);
+    if(ok){STATE.pedidos=oldPedidos;renderMain();}
     else {syncStatus.textContent='No se pudo restaurar el respaldo.';syncStatus.style.color='var(--red)';}
   };
   syncPanel.appendChild(restoreBtn);
