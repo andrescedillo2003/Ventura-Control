@@ -524,7 +524,8 @@ function computeMetrics(pedidos, compras, egresos){
   const hayDatosDropi = pedidos.some(p=>p.dropiId);
   const utilidadDropi = pedidos.reduce((s,p)=>s+parseNum(p.gananciaDropi),0);
   const utilidadEstimadaDropi = pedidosVendidos.reduce((s,p)=>s+parseNum(p.precioVenta)-parseNum(p.costoProducto)-parseNum(p.costoEnvio),0);
-  const utilidadNeta = hayDatosDropi ? utilidadDropi : facturacionEntregada - costoProductoEntregado - costoEnvioEntregado - gastoAds - gastoOtros;
+  const utilidadAntesDeGastos = hayDatosDropi ? utilidadDropi : facturacionEntregada - costoProductoEntregado - costoEnvioEntregado;
+  const utilidadNeta = utilidadAntesDeGastos - gastoAds - gastoOtros;
   const pctConfirmacion = total ? (confirmados/total*100) : 0;
   const pctEntrega = confirmados ? (entregados.length/confirmados*100) : 0;
   const ticketMedio = total ? (facturacionTotal/total) : 0;
@@ -682,7 +683,8 @@ function renderDashboard(){
   },0);
 
   const pedidosPeriodo = STATE.pedidos.filter(p=>p.fecha && p.fecha>=dashState.desde && p.fecha<=dashState.hasta);
-  const mp = computeMetrics(pedidosPeriodo, STATE.compras, STATE.egresos); // del período
+  const egresosPeriodo = STATE.egresos.filter(e=>e.fecha && e.fecha>=dashState.desde && e.fecha<=dashState.hasta);
+  const mp = computeMetrics(pedidosPeriodo, STATE.compras, egresosPeriodo); // del período
   const mt = computeMetrics(STATE.pedidos, STATE.compras, STATE.egresos); // de toda la cuenta
   if(mp.hayDatosDropi){
     const note=document.createElement('p'); note.className='hint';
@@ -702,6 +704,7 @@ function renderDashboard(){
     <div class="kpi"><div class="kpi-icon c-gold">$</div><div class="label">Utilidad estimada${mp.hayDatosDropi?' Dropi':''}</div><div class="value ${(mp.hayDatosDropi?mp.utilidadEstimadaDropi:mp.utilidadNeta)>=0?'pos':'neg'}">${money(mp.hayDatosDropi?mp.utilidadEstimadaDropi:mp.utilidadNeta)}</div>
       <div class="sub">${mp.hayDatosDropi?'Ventas menos proveedor y flete':'Sobre pedidos entregados'}</div></div>
     ${mp.hayDatosDropi?`<div class="kpi"><div class="kpi-icon c-green">$</div><div class="label">Utilidad realizada Dropi</div><div class="value">${money(mp.utilidadDropi)}</div><div class="sub">Suma de ganancia reportada por Dropi</div></div>`:''}
+    <div class="kpi"><div class="kpi-icon c-amber">$</div><div class="label">Gasto en ads</div><div class="value neg">${money(mp.gastoAds)}</div><div class="sub">Pagos registrados en el período seleccionado</div></div>
   `;
   main.appendChild(kpis1);
 
@@ -2065,7 +2068,7 @@ function renderFinanzas(){
     <div class="kpi"><div class="label">Por cobrar (en tránsito)</div><div class="value">${money(m.facturacionTransito)}</div></div>
     <div class="kpi"><div class="label">Costos de producto + envío</div><div class="value neg">${money(m.costoProductoEntregado+m.costoEnvioEntregado)}</div></div>
     <div class="kpi"><div class="label">Gasto en ads</div><div class="value neg">${money(m.gastoAds)}</div></div>
-    <div class="kpi"><div class="label">Utilidad neta</div><div class="value ${m.utilidadNeta>=0?'pos':'neg'}">${money(m.utilidadNeta)}</div></div>
+    <div class="kpi"><div class="label">Utilidad después de ads y otros gastos</div><div class="value ${m.utilidadNeta>=0?'pos':'neg'}">${money(m.utilidadNeta)}</div></div>
   `;
   main.appendChild(kpis);
 
@@ -2136,6 +2139,7 @@ function renderCampanas(){
     <div class="field"><label>Campaña</label><input id="cp_nombre" type="text"></div>
     <div class="field"><label>Plataforma</label><input id="cp_plataforma" type="text" placeholder="Meta Ads, TikTok..."></div>
     <div class="field"><label>Producto asociado</label><input id="cp_producto" type="text"></div>
+    <div class="field"><label>ID de transacción</label><input id="cp_referencia" type="text" placeholder="Identificador del comprobante Meta"></div>
     <div class="field"><label>Monto invertido</label><input id="cp_monto" type="number" step="0.01"></div>
   `;
   formPanel.appendChild(grid);
@@ -2144,9 +2148,13 @@ function renderCampanas(){
   btn.onclick = async ()=>{
     const fecha=document.getElementById('cp_fecha').value, nombre=document.getElementById('cp_nombre').value,
       plataforma=document.getElementById('cp_plataforma').value, producto=document.getElementById('cp_producto').value,
+      referencia=document.getElementById('cp_referencia').value.trim(),
       monto=document.getElementById('cp_monto').value;
     if(!nombre){ status.textContent='Agrega el nombre de la campaña.'; status.style.color='var(--red)'; return; }
-    STATE.egresos.push({id:uid(), fecha, concepto:nombre, plataforma, producto, monto, tipo:'Campaña'});
+    if(referencia && STATE.egresos.some(e=>e.tipo==='Campaña' && e.referencia===referencia)){
+      status.textContent='Ese ID de transacción ya está registrado.'; status.style.color='var(--red)'; return;
+    }
+    STATE.egresos.push({id:uid(), fecha, concepto:nombre, plataforma, producto, referencia, monto, tipo:'Campaña'});
     const ok = await saveList(KEYS.egresos, STATE.egresos);
     status.textContent = ok?'Guardado.':'No se pudo guardar.'; status.style.color=ok?'var(--green)':'var(--red)';
     renderMain();
@@ -2163,10 +2171,10 @@ function renderCampanas(){
   } else {
     let rows='';
     campanas.slice().reverse().forEach(c=>{
-      rows += `<tr><td>${c.fecha||'—'}</td><td>${c.concepto}</td><td>${c.plataforma||'—'}</td><td>${c.producto||'—'}</td><td>${money(c.monto)}</td>
+      rows += `<tr><td>${c.fecha||'—'}</td><td>${c.concepto}</td><td>${c.plataforma||'—'}</td><td>${c.producto||'—'}</td><td>${c.referencia||'—'}</td><td>${money(c.monto)}</td>
         <td><button class="btn btn-danger btn-sm" data-delcp="${c.id}">Eliminar</button></td></tr>`;
     });
-    wrap.innerHTML = `<table><thead><tr><th>Fecha</th><th>Campaña</th><th>Plataforma</th><th>Producto</th><th>Monto</th><th></th></tr></thead><tbody>${rows}</tbody></table>`;
+    wrap.innerHTML = `<table><thead><tr><th>Fecha</th><th>Campaña</th><th>Plataforma</th><th>Producto</th><th>ID transacción</th><th>Monto</th><th></th></tr></thead><tbody>${rows}</tbody></table>`;
   }
   tablePanel.appendChild(wrap);
   main.appendChild(tablePanel);
