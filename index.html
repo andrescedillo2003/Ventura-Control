@@ -157,7 +157,17 @@
 
   .pill{padding:3px 9px; border-radius:20px; font-size:11px; font-weight:600; display:inline-block;}
   select.sel-estado{min-width:132px;}
+  select.dropi-status{width:auto; border:0; border-radius:20px; padding:4px 8px; min-width:130px; max-width:310px; font-size:11px; font-weight:600; cursor:pointer;}
   select.sel-producto{min-width:180px;}
+  .pago-celda{min-width:170px;}
+  .pago-celda summary{cursor:pointer; list-style:none;}
+  .pago-celda summary::-webkit-details-marker{display:none;}
+  .pago-form{display:grid; gap:6px; min-width:180px; margin-top:7px;}
+  .pago-form input,.pago-form select{width:100%;}
+  .refs-celda{min-width:95px;}
+  .refs-celda summary{cursor:pointer; list-style:none; color:var(--blue);}
+  .refs-celda summary::-webkit-details-marker{display:none;}
+  .refs-form{display:grid; gap:6px; min-width:200px; margin-top:7px;}
   .pill.entregado{background:rgba(47,158,110,0.13); color:var(--green);}
   .pill.transito{background:rgba(62,126,166,0.14); color:var(--blue);}
   .pill.confirmado{background:rgba(184,122,33,0.14); color:var(--gold);}
@@ -167,7 +177,7 @@
   .filters{display:flex; gap:10px; flex-wrap:wrap; margin-bottom:14px; align-items:flex-end;}
   .filters .field{width:150px;}
 
-  .tabs{display:flex; gap:4px; margin-bottom:16px; border-bottom:1px solid var(--line);}
+  .tabs{display:flex; gap:4px; margin-bottom:16px; border-bottom:1px solid var(--line); overflow-x:auto; white-space:nowrap;}
   .tabs button{
     all:unset; cursor:pointer; padding:9px 4px; margin-right:18px; color:var(--muted);
     font-size:13px; font-weight:600; border-bottom:2px solid transparent;
@@ -380,9 +390,42 @@ const DEFAULT_TEMPLATE = '¡Hola {cliente}! 👋 Tu pedido de {producto} ya sali
 let STATE = { pedidos:[], compras:[], egresos:[], productos:[], envios:[], config:{mensajeTemplate: DEFAULT_TEMPLATE}, tab:'dashboard', loaded:false };
 
 const ESTADOS = ['Pendiente','Confirmado','En tránsito','Entregado','Devuelto','Cancelado'];
+// Estados observados en los dos exportes de Dropi del 15-16 sep 2026,
+// más PENDIENTE para un pedido subido antes de generar su guía.
+const DROPI_ESTADOS = [
+  'PENDIENTE', 'GUIA_GENERADA', 'INGRESANDO DE RECOLECCION A', 'INGRESANDO OPERATIVO A',
+  'EN RUTA A CENTRO LOGISTICO', 'EN RUTA A CONCESION', 'EN RUTA',
+  'EN DISTRIBUCION PARA ENTREGA EN AGENCIA', 'EN DISTRIBUCIÓN A CLIENTE',
+  'PARA RETIRO EN AGENCIA SERVIENTREGA', 'NOVEDAD', 'ENTREGADO',
+  'DEVOLUCION', 'RECHAZADO', 'CANCELADO'
+];
 function estadoClass(e){
   const m = {'Entregado':'entregado','En tránsito':'transito','Confirmado':'confirmado','Pendiente':'pendiente','Devuelto':'devuelto','Cancelado':'cancelado'};
   return m[e] || 'pendiente';
+}
+function canonicalDropiStatus(raw){
+  const s=String(raw||'').trim();
+  return s==='EN DISTRIBUCI�N A CLIENTE' ? 'EN DISTRIBUCIÓN A CLIENTE' : s;
+}
+function dropiStatusClass(raw){
+  const s=canonicalDropiStatus(raw);
+  if(s==='ENTREGADO') return 'entregado';
+  if(['DEVOLUCION','RECHAZADO','CANCELADO'].includes(s)) return 'devuelto';
+  if(s==='NOVEDAD') return 'confirmado';
+  if(s==='PENDIENTE') return 'pendiente';
+  if(s==='CONFIRMADO') return 'confirmado';
+  return 'transito';
+}
+function escapeHtml(value){
+  return String(value??'').replace(/[&<>"']/g,ch=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
+}
+function dropiStatusOptions(raw){
+  const selected=canonicalDropiStatus(raw);
+  const statuses=DROPI_ESTADOS.includes(selected)?DROPI_ESTADOS:[selected,...DROPI_ESTADOS];
+  return statuses.filter(Boolean).map(s=>`<option value="${escapeHtml(s)}" ${s===selected?'selected':''}>${escapeHtml(s)}</option>`).join('');
+}
+function pagoDropiConfirmado(p){
+  return p.estadoPagoDropi==='Pagado' && !!p.fechaPagoDropi && parseNum(p.montoPagadoDropi)>0;
 }
 function formatPhoneEC(raw){
   let d = String(raw||'').replace(/[^0-9]/g,'');
@@ -1230,16 +1273,56 @@ async function commitDropiSync(preview){
   return true;
 }
 /* ================= PEDIDOS ================= */
-let pedidoFilters = { estado:'', transportadora:'' };
+let pedidoFilters = { estadoDropi:'', transportadora:'' };
 let pedidoTab = 'todos';
 function pedidosForTab(tab){
   switch(tab){
     case 'confirmado': return STATE.pedidos.filter(p=>p.estado==='Confirmado');
     case 'guia_generada': return STATE.pedidos.filter(p=>p.guia && !['Entregado','Devuelto','Cancelado'].includes(p.estado));
     case 'entregado': return STATE.pedidos.filter(p=>p.estado==='Entregado');
+    case 'por_conciliar': return STATE.pedidos.filter(p=>p.estado==='Entregado' && !pagoDropiConfirmado(p));
+    case 'pagado': return STATE.pedidos.filter(p=>p.estado==='Entregado' && pagoDropiConfirmado(p));
     case 'guia_enviada': return STATE.pedidos.filter(p=>p.seguimientoEnviado);
     default: return STATE.pedidos;
   }
+}
+
+function referenciasError(p, dropiId, fechaGuia, guia, pedidos=STATE.pedidos){
+  if(dropiId && !/^\d+$/.test(dropiId)) return 'El ID Dropi debe contener solo números.';
+  if(dropiId && pedidos.some(x=>x.id!==p.id && String(x.dropiId||'').trim()===dropiId))
+    return `El ID Dropi ${dropiId} ya pertenece a otro pedido.`;
+  if(!!fechaGuia!==!!guia) return 'Ingresa la fecha de guía y el número de guía juntos.';
+  if(fechaGuia && p.fecha && fechaGuia<p.fecha) return 'La fecha de guía no puede ser anterior a la creación del pedido.';
+  return '';
+}
+function referenciasCell(p){
+  return `<details class="refs-celda" data-ref-row="${escapeHtml(p.id)}">
+    <summary title="Editar ID Dropi, fecha y número de guía">${escapeHtml(p.dropiId||'—')} ✎</summary>
+    <div class="refs-form">
+      <label>ID Dropi<input data-ref-id type="text" value="${escapeHtml(p.dropiId||'')}"></label>
+      <label>Fecha de guía<input data-ref-fecha type="date" value="${escapeHtml(p.fechaGuiaDropi||'')}"></label>
+      <label>Número de guía<input data-ref-guia type="text" value="${escapeHtml(p.guia||'')}"></label>
+      <button class="btn btn-primary btn-sm" data-save-ref="${escapeHtml(p.id)}">Guardar referencias</button>
+    </div>
+  </details>`;
+}
+
+function pagoCell(p){
+  const paid=pagoDropiConfirmado(p);
+  const label=paid ? `Pagado ${money(p.montoPagadoDropi)}` : (p.estado==='Entregado'?'Sin conciliar':'No entregado');
+  const statusClass=paid?'entregado':'pendiente';
+  return `<details class="pago-celda" data-pago-row="${escapeHtml(p.id)}">
+    <summary><span class="pill ${statusClass}">${escapeHtml(label)}</span> ▾</summary>
+    <div class="pago-form">
+      <label>Liquidación
+        <select data-pago-estado><option value="Pendiente" ${!paid?'selected':''}>Sin conciliar</option><option value="Pagado" ${paid?'selected':''}>Pagado por Dropi</option></select>
+      </label>
+      <label>Fecha de depósito<input data-pago-fecha type="date" value="${escapeHtml(p.fechaPagoDropi||'')}"></label>
+      <label>Importe asignado USD<input data-pago-monto type="number" min="0" step="0.01" value="${p.montoPagadoDropi?escapeHtml(p.montoPagadoDropi):''}"></label>
+      <label>Referencia del depósito<input data-pago-ref type="text" value="${escapeHtml(p.referenciaPagoDropi||'')}"></label>
+      <button class="btn btn-primary btn-sm" data-save-pago="${escapeHtml(p.id)}">Guardar pago</button>
+    </div>
+  </details>`;
 }
 
 function renderPedidos(){
@@ -1253,6 +1336,7 @@ function renderPedidos(){
 
   const textFields = [
     ['fecha','Fecha','date'], ['cliente','Cliente','text'], ['telefono','Teléfono','text'],
+    ['dropiId','ID Dropi','text'], ['fechaGuiaDropi','Fecha de guía','date'],
   ];
   textFields.forEach(([id,label,type])=>{
     const f = document.createElement('div'); f.className='field';
@@ -1296,11 +1380,11 @@ function renderPedidos(){
   grid.appendChild(guiaField);
 
   const estadoField = document.createElement('div'); estadoField.className='field';
-  estadoField.innerHTML = `<label>Estado</label><select id="pf_estado">${ESTADOS.map(e=>`<option>${e}</option>`).join('')}</select>`;
+  estadoField.innerHTML = `<label>Estado Dropi</label><select id="pf_estado">${DROPI_ESTADOS.map(e=>`<option>${escapeHtml(e)}</option>`).join('')}</select>`;
   grid.appendChild(estadoField);
   formPanel.appendChild(grid);
 
-  const allFieldIds = ['fecha','cliente','telefono','provincia','ciudad','producto','cantidad','precioVenta','costoProducto','costoEnvio','transportadora','guia'];
+  const allFieldIds = ['fecha','cliente','telefono','dropiId','fechaGuiaDropi','provincia','ciudad','producto','cantidad','precioVenta','costoProducto','costoEnvio','transportadora','guia'];
 
   const btnRow = document.createElement('div');
   const saveBtn = document.createElement('button'); saveBtn.className='btn btn-primary'; saveBtn.textContent='Guardar pedido';
@@ -1308,10 +1392,16 @@ function renderPedidos(){
   saveBtn.onclick = async ()=>{
     const p = { id: uid() };
     allFieldIds.forEach(id=>{ const el = document.getElementById('pf_'+id); if(el) p[id] = el.value; });
-    p.estado = document.getElementById('pf_estado').value;
+    p.estadoDropi = document.getElementById('pf_estado').value;
+    p.estado = mapEstadoDropiExport(p.estadoDropi);
     if(!p.cliente && !p.producto){ status.textContent = 'Agrega al menos cliente o producto.'; status.style.color='var(--red)'; return; }
+    p.dropiId=String(p.dropiId||'').trim(); p.guia=String(p.guia||'').trim();
+    const refsError=referenciasError(p,p.dropiId,p.fechaGuiaDropi,p.guia);
+    if(refsError){ status.textContent=refsError; status.style.color='var(--red)'; return; }
+    if(p.guia && p.estadoDropi==='PENDIENTE'){ p.estadoDropi='GUIA_GENERADA'; p.estado=mapEstadoDropiExport(p.estadoDropi); }
     STATE.pedidos.push(p);
     const ok = await saveList(KEYS.pedidos, STATE.pedidos);
+    if(!ok) STATE.pedidos = STATE.pedidos.filter(x=>x.id!==p.id);
     status.textContent = ok ? 'Guardado.' : 'No se pudo guardar.';
     status.style.color = ok ? 'var(--green)' : 'var(--red)';
     if(ok && p.ciudad && p.transportadora && parseNum(p.costoEnvio)>0){
@@ -1607,7 +1697,8 @@ function renderPedidos(){
   // Pestañas por etapa del pedido
   const pedidoTabsDef = [
     ['todos','Todos'], ['confirmado','Confirmado'], ['guia_generada','Guía generada'],
-    ['entregado','Entregado'], ['guia_enviada','Guía enviada al cliente']
+    ['entregado','Entregado'], ['por_conciliar','Pago sin conciliar'], ['pagado','Pagado por Dropi'],
+    ['guia_enviada','Guía enviada al cliente']
   ];
   const tabsDiv = document.createElement('div'); tabsDiv.className='tabs';
   pedidoTabsDef.forEach(([id,label])=>{
@@ -1627,12 +1718,22 @@ function renderPedidos(){
     <div class="kpi"><div class="label">Facturación de esta pestaña</div><div class="value">${money(tabFacturacion)}</div></div>`;
   main.appendChild(miniKpi);
 
+  const entregadosCuenta=STATE.pedidos.filter(p=>p.estado==='Entregado');
+  const pagosConfirmados=entregadosCuenta.filter(pagoDropiConfirmado);
+  const pagosFueraDeEstado=STATE.pedidos.filter(p=>p.estado!=='Entregado' && pagoDropiConfirmado(p));
+  const resumenPagos=document.createElement('div'); resumenPagos.className='kpi-grid'; resumenPagos.style.marginBottom='16px';
+  resumenPagos.innerHTML=`<div class="kpi"><div class="label">Entregados sin conciliar pago</div><div class="value">${entregadosCuenta.length-pagosConfirmados.length}</div></div>
+    <div class="kpi"><div class="label">Entregados marcados pagados</div><div class="value pos">${pagosConfirmados.length}</div></div>
+    <div class="kpi"><div class="label">Importe de depósitos asignado</div><div class="value">${money(pagosConfirmados.reduce((s,p)=>s+parseNum(p.montoPagadoDropi),0))}</div><div class="sub">Importe neto registrado por pedido, no venta bruta</div></div>
+    ${pagosFueraDeEstado.length?`<div class="kpi"><div class="label">Pagos a revisar</div><div class="value neg">${pagosFueraDeEstado.length}</div><div class="sub">Marcados pagados pero no entregados</div></div>`:''}`;
+  main.appendChild(resumenPagos);
+
   // Table + filters
   const tablePanel = document.createElement('div'); tablePanel.className='panel';
   tablePanel.innerHTML = `<h2>Pedidos registrados (${STATE.pedidos.length})</h2>`;
   const filters = document.createElement('div'); filters.className='filters';
   const estadoSel = document.createElement('div'); estadoSel.className='field';
-  estadoSel.innerHTML = `<label>Estado</label><select id="filt_estado"><option value="">Todos</option>${ESTADOS.map(e=>`<option ${pedidoFilters.estado===e?'selected':''}>${e}</option>`).join('')}</select>`;
+  estadoSel.innerHTML = `<label>Estado Dropi</label><select id="filt_estado"><option value="">Todos</option>${DROPI_ESTADOS.map(e=>`<option ${pedidoFilters.estadoDropi===e?'selected':''}>${escapeHtml(e)}</option>`).join('')}</select>`;
   filters.appendChild(estadoSel);
   const transInput = document.createElement('div'); transInput.className='field';
   transInput.innerHTML = `<label>Transportadora</label><input id="filt_trans" value="${pedidoFilters.transportadora}">`;
@@ -1640,12 +1741,12 @@ function renderPedidos(){
   tablePanel.appendChild(filters);
 
   setTimeout(()=>{
-    document.getElementById('filt_estado').onchange = (e)=>{ pedidoFilters.estado = e.target.value; renderMain(); };
+    document.getElementById('filt_estado').onchange = (e)=>{ pedidoFilters.estadoDropi = e.target.value; renderMain(); };
     document.getElementById('filt_trans').oninput = (e)=>{ pedidoFilters.transportadora = e.target.value; renderMain(); };
   },0);
 
   let list = tabSubset;
-  if(pedidoFilters.estado) list = list.filter(p=>p.estado===pedidoFilters.estado);
+  if(pedidoFilters.estadoDropi) list = list.filter(p=>canonicalDropiStatus(p.estadoDropi||'PENDIENTE')===pedidoFilters.estadoDropi);
   if(pedidoFilters.transportadora) list = list.filter(p=>(p.transportadora||'').toLowerCase().includes(pedidoFilters.transportadora.toLowerCase()));
 
   const wrap = document.createElement('div'); wrap.className='table-wrap';
@@ -1665,11 +1766,12 @@ function renderPedidos(){
           ${prodOptions}
         </select>`;
       rows += `<tr>
-        <td>${p.dropiId||'—'}</td>
+        <td>${referenciasCell(p)}</td>
         <td>${p.fecha||'—'}${p.horaDropi?' '+p.horaDropi:''}</td>
         <td>${p.fechaGuiaDropi||'—'}</td>
         <td>${p.guia||'—'}</td>
-        <td>${p.estadoDropi ? `<span class="pill ${estadoClass(p.estado)}">${p.estadoDropi.replace(/_/g,' ')}</span>` : `<select class="sel-estado" data-estado-row="${p.id}">${ESTADOS.map(e=>`<option ${p.estado===e?'selected':''}>${e}</option>`).join('')}</select>`}</td>
+        <td><select class="dropi-status pill ${dropiStatusClass(p.estadoDropi||'PENDIENTE')}" data-dropi-status-row="${escapeHtml(p.id)}" aria-label="Estado Dropi del pedido ${escapeHtml(p.dropiId||'sin ID')}" title="Cambiar estado de Dropi">${dropiStatusOptions(p.estadoDropi||'PENDIENTE')}</select></td>
+        <td>${pagoCell(p)}</td>
         <td>${p.transportadora||'—'}</td>
         <td>${p.cliente||'—'}</td>
         <td>${prodSelectHtml}</td>
@@ -1683,7 +1785,7 @@ function renderPedidos(){
       </tr>`;
     });
     wrap.innerHTML = `<table><thead><tr>
-      <th>ID Dropi</th><th>Creación en Dropi</th><th>Fecha de guía</th><th>Guía</th><th>Estado Dropi</th><th>Transportadora</th><th>Cliente</th>
+      <th>ID Dropi</th><th>Creación en Dropi</th><th>Fecha de guía</th><th>Guía</th><th>Estado Dropi</th><th>Pago Dropi</th><th>Transportadora</th><th>Cliente</th>
       <th>Producto</th><th>Cant.</th><th>Precio</th><th>Costo prod.</th><th>Costo envío</th><th>Costo devolución</th><th>Ciudad</th><th></th>
     </tr></thead><tbody>${rows}</tbody></table>`;
   }
@@ -1698,12 +1800,72 @@ function renderPedidos(){
         renderMain();
       };
     });
-    document.querySelectorAll('[data-estado-row]').forEach(sel=>{
+    document.querySelectorAll('[data-dropi-status-row]').forEach(sel=>{
       sel.onchange = async (e)=>{
-        const p = STATE.pedidos.find(x=>x.id===sel.dataset.estadoRow);
+        const p=STATE.pedidos.find(x=>x.id===sel.dataset.dropiStatusRow);
         if(!p) return;
-        p.estado = e.target.value;
-        await saveList(KEYS.pedidos, STATE.pedidos);
+        if(e.target.value==='GUIA_GENERADA' && (!p.guia || !p.fechaGuiaDropi)){
+          alert('Primero registra el número y la fecha de guía en la columna ID Dropi.'); renderMain(); return;
+        }
+        if(e.target.value==='PENDIENTE' && p.guia){
+          alert('Este pedido ya tiene guía. Para volver a PENDIENTE, corrige primero las referencias.'); renderMain(); return;
+        }
+        const previo={estado:p.estado, estadoDropi:p.estadoDropi};
+        p.estadoDropi=e.target.value;
+        p.estado=mapEstadoDropiExport(p.estadoDropi);
+        const ok=await saveList(KEYS.pedidos,STATE.pedidos);
+        if(!ok){ p.estado=previo.estado; p.estadoDropi=previo.estadoDropi; alert('No se pudo guardar el estado. Inténtalo de nuevo.'); }
+        renderMain();
+      };
+    });
+    document.querySelectorAll('[data-save-ref]').forEach(btn=>{
+      btn.onclick=async ()=>{
+        const p=STATE.pedidos.find(x=>x.id===btn.dataset.saveRef);
+        if(!p) return;
+        const form=btn.closest('[data-ref-row]');
+        const dropiId=form.querySelector('[data-ref-id]').value.trim();
+        const fechaGuia=form.querySelector('[data-ref-fecha]').value;
+        const guia=form.querySelector('[data-ref-guia]').value.trim();
+        const issue=referenciasError(p,dropiId,fechaGuia,guia);
+        if(issue){ alert(issue); return; }
+        if(guia && STATE.pedidos.some(x=>x.id!==p.id && String(x.guia||'').trim()===guia) &&
+           !confirm(`La guía ${guia} también figura en otro pedido. ¿Confirmas que ambos comparten guía?`)) return;
+        if(pagoDropiConfirmado(p) && guia!==String(p.guia||'').trim() &&
+           !confirm('Este pedido ya tiene un pago registrado. ¿Confirmas el cambio de guía?')) return;
+        const previo={dropiId:p.dropiId,fechaGuiaDropi:p.fechaGuiaDropi,guia:p.guia,estadoDropi:p.estadoDropi,estado:p.estado};
+        p.dropiId=dropiId;
+        p.fechaGuiaDropi=fechaGuia;
+        p.guia=guia;
+        if(guia && (!p.estadoDropi || p.estadoDropi==='PENDIENTE')){
+          p.estadoDropi='GUIA_GENERADA'; p.estado=mapEstadoDropiExport(p.estadoDropi);
+        }
+        const ok=await saveList(KEYS.pedidos,STATE.pedidos);
+        if(!ok){ Object.assign(p,previo); alert('No se pudieron guardar las referencias. Inténtalo de nuevo.'); }
+        renderMain();
+      };
+    });
+    document.querySelectorAll('[data-save-pago]').forEach(btn=>{
+      btn.onclick=async ()=>{
+        const p=STATE.pedidos.find(x=>x.id===btn.dataset.savePago);
+        if(!p) return;
+        const form=btn.closest('[data-pago-row]');
+        const estado=form.querySelector('[data-pago-estado]').value;
+        const fecha=form.querySelector('[data-pago-fecha]').value;
+        const monto=form.querySelector('[data-pago-monto]').value;
+        const referencia=form.querySelector('[data-pago-ref]').value.trim();
+        if(estado==='Pagado' && p.estado!=='Entregado'){
+          alert('Solo un pedido ENTREGADO puede marcarse como pagado por Dropi.'); return;
+        }
+        if(estado==='Pagado' && (!fecha || parseNum(monto)<=0)){
+          alert('Para marcarlo pagado, registra la fecha y el importe asignado al pedido en la liquidación de Dropi.'); return;
+        }
+        const previo={estadoPagoDropi:p.estadoPagoDropi,fechaPagoDropi:p.fechaPagoDropi,montoPagadoDropi:p.montoPagadoDropi,referenciaPagoDropi:p.referenciaPagoDropi};
+        p.estadoPagoDropi=estado;
+        p.fechaPagoDropi=estado==='Pagado'?fecha:'';
+        p.montoPagadoDropi=estado==='Pagado'?parseNum(monto):0;
+        p.referenciaPagoDropi=estado==='Pagado'?referencia:'';
+        const ok=await saveList(KEYS.pedidos,STATE.pedidos);
+        if(!ok){ Object.assign(p,previo); alert('No se pudo guardar el pago. Revisa la conexión e inténtalo de nuevo.'); }
         renderMain();
       };
     });
