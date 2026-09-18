@@ -606,6 +606,8 @@ function computeMetrics(pedidos, compras, egresos){
 
   const hayDatosDropi = pedidos.some(p=>p.dropiId);
   const utilidadDropi = pedidos.reduce((s,p)=>s+parseNum(p.gananciaDropi),0);
+  const creditosBilletera=entregados.filter(pagoDropiConfirmado);
+  const gananciaAcreditada=creditosBilletera.reduce((s,p)=>s+parseNum(p.montoPagadoDropi),0);
   const utilidadEstimadaDropi = pedidosVendidos.reduce((s,p)=>s+parseNum(p.precioVenta)-parseNum(p.costoProducto)-parseNum(p.costoEnvio),0);
   const utilidadAntesDeGastos = hayDatosDropi ? utilidadDropi : facturacionEntregada - costoProductoEntregado - costoEnvioEntregado;
   const utilidadNeta = utilidadAntesDeGastos - gastoAds - gastoOtros;
@@ -618,7 +620,8 @@ function computeMetrics(pedidos, compras, egresos){
   return { total, confirmados, despachados, entregadosN:entregados.length, devueltos, cancelados, noConfirmados,
     facturacionTotal, facturacionEntregada, facturacionTransito, facturacionNovedad,
     costoProductoEntregado, costoEnvioEntregado, utilidadTransito, gastoAds, gastoOtros, gastoCompras,
-    utilidadNeta, utilidadDropi, utilidadEstimadaDropi, hayDatosDropi, pctConfirmacion, pctEntrega, ticketMedio, conversionTotal, perdidaConfirmacion };
+    utilidadNeta, utilidadDropi, utilidadEstimadaDropi, gananciaAcreditada,
+    creditosBilleteraN:creditosBilletera.length, hayDatosDropi, pctConfirmacion, pctEntrega, ticketMedio, conversionTotal, perdidaConfirmacion };
 }
 
 /* ---------- gráfica de líneas simple en SVG ---------- */
@@ -786,7 +789,8 @@ function renderDashboard(){
       <div class="sub">${mp.entregadosN} pedidos entregados</div></div>
     <div class="kpi"><div class="kpi-icon c-gold">$</div><div class="label">Utilidad estimada${mp.hayDatosDropi?' Dropi':''}</div><div class="value ${(mp.hayDatosDropi?mp.utilidadEstimadaDropi:mp.utilidadNeta)>=0?'pos':'neg'}">${money(mp.hayDatosDropi?mp.utilidadEstimadaDropi:mp.utilidadNeta)}</div>
       <div class="sub">${mp.hayDatosDropi?'Ventas menos proveedor y flete':'Sobre pedidos entregados'}</div></div>
-    ${mp.hayDatosDropi?`<div class="kpi"><div class="kpi-icon c-green">$</div><div class="label">Utilidad realizada Dropi</div><div class="value">${money(mp.utilidadDropi)}</div><div class="sub">Suma de ganancia reportada por Dropi</div></div>`:''}
+    ${mp.hayDatosDropi?`<div class="kpi"><div class="kpi-icon c-green">$</div><div class="label">Ganancia acreditada en billetera</div><div class="value">${money(mp.gananciaAcreditada)}</div><div class="sub">${mp.creditosBilleteraN} entregados conciliados · no es depósito bancario</div></div>
+    <div class="kpi"><div class="kpi-icon c-blue">$</div><div class="label">Ganancia del export Dropi</div><div class="value">${money(mp.utilidadDropi)}</div><div class="sub">Corte del archivo importado; puede estar desactualizado</div></div>`:''}
     <div class="kpi"><div class="kpi-icon c-amber">$</div><div class="label">Gasto en ads</div><div class="value neg">${money(mp.gastoAds)}</div><div class="sub">Pagos registrados en el período seleccionado</div></div>
   `;
   main.appendChild(kpis1);
@@ -2311,7 +2315,7 @@ function renderEnvios(){
 /* ================= FINANZAS ================= */
 function renderFinanzas(){
   const main = document.getElementById('main');
-  main.appendChild(head('Finanzas', 'Ingresos, egresos y utilidad real del negocio.'));
+  main.appendChild(head('Finanzas', 'Márgenes y gastos registrados; no sustituye una conciliación bancaria o utilidad neta contable.'));
   const m = computeMetrics(STATE.pedidos, STATE.compras, STATE.egresos);
 
   const kpis = document.createElement('div'); kpis.className='kpi-grid';
@@ -2320,7 +2324,8 @@ function renderFinanzas(){
     <div class="kpi"><div class="label">Por cobrar (en tránsito)</div><div class="value">${money(m.facturacionTransito)}</div></div>
     <div class="kpi"><div class="label">Costos de producto + envío</div><div class="value neg">${money(m.costoProductoEntregado+m.costoEnvioEntregado)}</div></div>
     <div class="kpi"><div class="label">Gasto en ads</div><div class="value neg">${money(m.gastoAds)}</div></div>
-    <div class="kpi"><div class="label">Utilidad después de ads y otros gastos</div><div class="value ${m.utilidadNeta>=0?'pos':'neg'}">${money(m.utilidadNeta)}</div></div>
+    <div class="kpi"><div class="label">Ganancia acreditada en billetera</div><div class="value pos">${money(m.gananciaAcreditada)}</div><div class="sub">${m.creditosBilleteraN} pedidos; no es depósito bancario</div></div>
+    <div class="kpi"><div class="label">Resultado parcial según export menos ads y otros gastos</div><div class="value ${m.utilidadNeta>=0?'pos':'neg'}">${money(m.utilidadNeta)}</div><div class="sub">Puede omitir ganancias posteriores y cargos de devolución</div></div>
   `;
   main.appendChild(kpis);
 

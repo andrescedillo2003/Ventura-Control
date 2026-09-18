@@ -22,6 +22,7 @@ const result = new Function(`${code}
     pendingPaymentTab:pedidosForTab('por_conciliar').map(x=>x.id),
     fakePaid:pagoDropiConfirmado(rows[2]),
     paid:pagoDropiConfirmado(rows[3]),
+    creditMetrics:computeMetrics(rows,[],[]),
     paymentCell:pagoCell(rows[2]),
     referenceCell:referenciasCells({id:'a',dropiId:'',fechaGuiaDropi:'',guia:''}),
     escapedReferenceCell:referenciasCells({id:'a',dropiId:'<b>',fechaGuiaDropi:'',guia:'" onfocus="bad'}),
@@ -51,6 +52,8 @@ assert.deepEqual(result.paymentTab, ['d']);
 assert.deepEqual(result.pendingPaymentTab, ['c']);
 assert.equal(result.fakePaid, false);
 assert.equal(result.paid, true);
+assert.equal(result.creditMetrics.creditosBilleteraN, 1);
+assert.equal(result.creditMetrics.gananciaAcreditada, 16.96);
 assert.match(result.paymentCell, /Sin conciliar/);
 assert.match(result.referenceCell, /data-ref-fecha/);
 assert.match(result.referenceCell, /data-ref-guia/);
