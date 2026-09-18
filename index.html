@@ -164,10 +164,10 @@
   .pago-celda summary::-webkit-details-marker{display:none;}
   .pago-form{display:grid; gap:6px; min-width:180px; margin-top:7px;}
   .pago-form input,.pago-form select{width:100%;}
-  .refs-celda{min-width:95px;}
-  .refs-celda summary{cursor:pointer; list-style:none; color:var(--blue);}
-  .refs-celda summary::-webkit-details-marker{display:none;}
-  .refs-form{display:grid; gap:6px; min-width:200px; margin-top:7px;}
+  .ref-input{min-width:105px; max-width:145px; padding:5px 7px; font-size:12px;}
+  .ref-date{min-width:133px; max-width:145px;}
+  .ref-guia-wrap{display:flex; align-items:center; gap:5px;}
+  .ref-guia-wrap .btn{white-space:nowrap;}
   .pill.entregado{background:rgba(47,158,110,0.13); color:var(--green);}
   .pill.transito{background:rgba(62,126,166,0.14); color:var(--blue);}
   .pill.confirmado{background:rgba(184,122,33,0.14); color:var(--gold);}
@@ -426,6 +426,46 @@ function dropiStatusOptions(raw){
 }
 function pagoDropiConfirmado(p){
   return p.estadoPagoDropi==='Pagado' && !!p.fechaPagoDropi && parseNum(p.montoPagadoDropi)>0;
+}
+function expectedDropiCredit(p){
+  return Math.round((parseNum(p.gananciaDropi)>0?parseNum(p.gananciaDropi):
+    parseNum(p.precioVenta)-parseNum(p.costoProducto)-parseNum(p.costoEnvio))*100)/100;
+}
+function parseWalletCredits(text){
+  const lines=String(text||'').trim().split(/\r?\n/).filter(Boolean);
+  if(lines[0]?.trim()!=='transaccion\tfecha\tpedido_id\tguia\timporte')
+    throw new Error('La primera línea debe ser: transaccion, fecha, pedido_id, guia, importe (separados por tabulaciones).');
+  return lines.slice(1).map((line,i)=>{
+    const parts=line.split('\t').map(s=>s.trim());
+    if(parts.length!==5 || !/^\d+$/.test(parts[0]) || !/^\d{4}-\d{2}-\d{2}$/.test(parts[1]) ||
+       !/^\d+$/.test(parts[2]) || !parts[3] || !/^\d+(?:\.\d{1,2})?$/.test(parts[4]))
+      throw new Error(`Formato inválido en la línea ${i+2}.`);
+    return {transaccion:parts[0],fecha:parts[1],pedidoId:parts[2],guia:parts[3],importe:Number(parts[4])};
+  });
+}
+function compareWalletCredits(entries,pedidos){
+  const accepted=[],rejected=[],seenTx=new Set(),seenOrder=new Set();
+  for(const e of entries){
+    const matches=pedidos.filter(p=>String(p.dropiId||'').trim()===e.pedidoId);
+    const p=matches[0];
+    const expected=p?expectedDropiCredit(p):0;
+    let reason='';
+    if(seenTx.has(e.transaccion) || seenOrder.has(e.pedidoId)) reason='Transacción u orden repetida en el lote';
+    else if(matches.length!==1) reason='ID ausente o duplicado en Ventura';
+    else if(String(p.guia||'').trim().toUpperCase()!==e.guia.toUpperCase()) reason='Guía distinta';
+    else if(p.estado!=='Entregado') reason='Pedido no entregado en Ventura';
+    else if(expected<=0 || Math.round(e.importe*100)!==Math.round(expected*100)) reason='Importe distinto del margen del pedido';
+    else if(pagoDropiConfirmado(p) &&
+       (String(p.referenciaPagoDropi||'')!==e.transaccion ||
+        p.fechaPagoDropi!==e.fecha || Math.round(parseNum(p.montoPagadoDropi)*100)!==Math.round(e.importe*100)))
+      reason='Pedido ya conciliado con otro movimiento';
+    else if(pedidos.some(x=>x.id!==p.id && String(x.referenciaPagoDropi||'')===e.transaccion))
+      reason='Transacción ya asignada a otro pedido';
+    if(reason) rejected.push({...e,reason});
+    else accepted.push({entry:e,pedido:p,already:pagoDropiConfirmado(p)});
+    seenTx.add(e.transaccion); seenOrder.add(e.pedidoId);
+  }
+  return {accepted,rejected};
 }
 function formatPhoneEC(raw){
   let d = String(raw||'').replace(/[^0-9]/g,'');
@@ -1295,32 +1335,28 @@ function referenciasError(p, dropiId, fechaGuia, guia, pedidos=STATE.pedidos){
   if(fechaGuia && p.fecha && fechaGuia<p.fecha) return 'La fecha de guía no puede ser anterior a la creación del pedido.';
   return '';
 }
-function referenciasCell(p){
-  return `<details class="refs-celda" data-ref-row="${escapeHtml(p.id)}">
-    <summary title="Editar ID Dropi, fecha y número de guía">${escapeHtml(p.dropiId||'—')} ✎</summary>
-    <div class="refs-form">
-      <label>ID Dropi<input data-ref-id type="text" value="${escapeHtml(p.dropiId||'')}"></label>
-      <label>Fecha de guía<input data-ref-fecha type="date" value="${escapeHtml(p.fechaGuiaDropi||'')}"></label>
-      <label>Número de guía<input data-ref-guia type="text" value="${escapeHtml(p.guia||'')}"></label>
-      <button class="btn btn-primary btn-sm" data-save-ref="${escapeHtml(p.id)}">Guardar referencias</button>
-    </div>
-  </details>`;
+function referenciasCells(p){
+  const label=escapeHtml(p.dropiId||p.id);
+  return `<td><input class="ref-input" data-ref-id type="text" value="${escapeHtml(p.dropiId||'')}" aria-label="ID Dropi del pedido ${label}" placeholder="ID Dropi"></td>
+    <td>${escapeHtml(p.fecha||'—')}${p.horaDropi?' '+escapeHtml(p.horaDropi):''}</td>
+    <td><input class="ref-input ref-date" data-ref-fecha type="date" value="${escapeHtml(p.fechaGuiaDropi||'')}" aria-label="Fecha de guía del pedido ${label}"></td>
+    <td><div class="ref-guia-wrap"><input class="ref-input" data-ref-guia type="text" value="${escapeHtml(p.guia||'')}" aria-label="Guía del pedido ${label}" placeholder="Guía"><button class="btn btn-primary btn-sm" data-save-ref="${escapeHtml(p.id)}" title="Guardar ID, fecha y guía">Guardar</button></div></td>`;
 }
 
 function pagoCell(p){
   const paid=pagoDropiConfirmado(p);
-  const label=paid ? `Pagado ${money(p.montoPagadoDropi)}` : (p.estado==='Entregado'?'Sin conciliar':'No entregado');
+  const label=paid ? `Acreditado ${money(p.montoPagadoDropi)}` : (p.estado==='Entregado'?'Sin conciliar':'No entregado');
   const statusClass=paid?'entregado':'pendiente';
   return `<details class="pago-celda" data-pago-row="${escapeHtml(p.id)}">
     <summary><span class="pill ${statusClass}">${escapeHtml(label)}</span> ▾</summary>
     <div class="pago-form">
-      <label>Liquidación
-        <select data-pago-estado><option value="Pendiente" ${!paid?'selected':''}>Sin conciliar</option><option value="Pagado" ${paid?'selected':''}>Pagado por Dropi</option></select>
+      <label>Crédito en billetera
+        <select data-pago-estado><option value="Pendiente" ${!paid?'selected':''}>Sin conciliar</option><option value="Pagado" ${paid?'selected':''}>Acreditado en billetera</option></select>
       </label>
-      <label>Fecha de depósito<input data-pago-fecha type="date" value="${escapeHtml(p.fechaPagoDropi||'')}"></label>
-      <label>Importe asignado USD<input data-pago-monto type="number" min="0" step="0.01" value="${p.montoPagadoDropi?escapeHtml(p.montoPagadoDropi):''}"></label>
-      <label>Referencia del depósito<input data-pago-ref type="text" value="${escapeHtml(p.referenciaPagoDropi||'')}"></label>
-      <button class="btn btn-primary btn-sm" data-save-pago="${escapeHtml(p.id)}">Guardar pago</button>
+      <label>Fecha de acreditación<input data-pago-fecha type="date" value="${escapeHtml(p.fechaPagoDropi||'')}"></label>
+      <label>Ganancia acreditada USD<input data-pago-monto type="number" min="0" step="0.01" value="${p.montoPagadoDropi?escapeHtml(p.montoPagadoDropi):''}"></label>
+      <label>ID de transacción<input data-pago-ref type="text" value="${escapeHtml(p.referenciaPagoDropi||'')}"></label>
+      <button class="btn btn-primary btn-sm" data-save-pago="${escapeHtml(p.id)}">Guardar crédito</button>
     </div>
   </details>`;
 }
@@ -1694,10 +1730,63 @@ function renderPedidos(){
   syncPanel.appendChild(downloadBackupBtn);
   main.appendChild(syncPanel);
 
+  const walletPanel=document.createElement('div'); walletPanel.className='panel';
+  walletPanel.innerHTML=`<h2>Conciliar créditos de la billetera</h2>
+    <p class="hint">Pega solo transacciones «ENTRADA POR GANANCIA» verificadas. La comparación exige ID, guía, pedido entregado e importe exacto. Una acreditación en billetera no demuestra un retiro o depósito bancario.</p>
+    <textarea id="wallet_credit_rows" aria-label="Créditos para conciliar" placeholder="transaccion&#9;fecha&#9;pedido_id&#9;guia&#9;importe" style="width:100%;min-height:80px"></textarea>
+    <button class="btn btn-ghost btn-sm" id="wallet_compare">Comparar créditos</button>
+    <div id="wallet_result" class="hint" style="margin-top:10px"></div>`;
+  main.appendChild(walletPanel);
+  walletPanel.querySelector('#wallet_compare').onclick=()=>{
+    const result=walletPanel.querySelector('#wallet_result');
+    let entries;
+    try{entries=parseWalletCredits(walletPanel.querySelector('#wallet_credit_rows').value);}
+    catch(err){result.textContent=err.message;result.style.color='var(--red)';return;}
+    const preview=compareWalletCredits(entries,STATE.pedidos);
+    const fresh=preview.accepted.filter(x=>!x.already);
+    result.innerHTML=`<p>${entries.length} movimientos leídos · ${fresh.length} nuevos coinciden · ${preview.accepted.length-fresh.length} ya conciliados · ${preview.rejected.length} excluidos.</p>
+      ${preview.rejected.length?`<p style="color:var(--red)">${preview.rejected.map(x=>escapeHtml(x.pedidoId+' / '+x.transaccion+': '+x.reason)).join('<br>')}</p>`:''}`;
+    if(!fresh.length) return;
+    const apply=document.createElement('button'); apply.className='btn btn-primary btn-sm';
+    apply.textContent=`Registrar ${fresh.length} créditos coincidentes`;
+    apply.onclick=async()=>{
+      const checked=compareWalletCredits(entries,STATE.pedidos);
+      const toSave=checked.accepted.filter(x=>!x.already);
+      const previewTx=new Set(fresh.map(x=>x.entry.transaccion));
+      if(toSave.length!==fresh.length || toSave.some(x=>!previewTx.has(x.entry.transaccion))){
+        alert('Los pedidos cambiaron desde la comparación. Compara de nuevo.');return;
+      }
+      apply.disabled=true;
+      const backup={fecha:new Date().toISOString(),pedidos:packPedidos(STATE.pedidos)};
+      const existingBackup=await loadRaw('ventura:pedidos:respaldo-billetera',null);
+      if(!existingBackup && !await saveRaw('ventura:pedidos:respaldo-billetera',backup)){
+        apply.disabled=false;
+        alert('No se pudo guardar el respaldo de pedidos. No se modificó ninguna conciliación.');return;
+      }
+      for(const {entry,pedido} of toSave){
+        pedido.estadoPagoDropi='Pagado'; pedido.fechaPagoDropi=entry.fecha;
+        pedido.montoPagadoDropi=entry.importe; pedido.referenciaPagoDropi=entry.transaccion;
+      }
+      const ok=await saveList(KEYS.pedidos,STATE.pedidos);
+      if(!ok){STATE.pedidos=unpackPedidos(backup.pedidos);apply.disabled=false;alert('No se pudieron guardar los créditos.');return;}
+      const verified=await loadList(KEYS.pedidos);
+      if(toSave.some(({entry})=>!verified.some(p=>String(p.dropiId||'')===entry.pedidoId &&
+        String(p.referenciaPagoDropi||'')===entry.transaccion && p.fechaPagoDropi===entry.fecha &&
+        Math.round(parseNum(p.montoPagadoDropi)*100)===Math.round(entry.importe*100)))){
+        if(verified.length) STATE.pedidos=verified;
+        apply.disabled=false;
+        alert('La verificación posterior no coincidió. Revisa los pedidos antes de repetir.');
+        renderMain();return;
+      }
+      STATE.pedidos=verified; renderMain();
+    };
+    result.appendChild(apply);
+  };
+
   // Pestañas por etapa del pedido
   const pedidoTabsDef = [
     ['todos','Todos'], ['confirmado','Confirmado'], ['guia_generada','Guía generada'],
-    ['entregado','Entregado'], ['por_conciliar','Pago sin conciliar'], ['pagado','Pagado por Dropi'],
+    ['entregado','Entregado'], ['por_conciliar','Crédito sin conciliar'], ['pagado','Acreditado billetera'],
     ['guia_enviada','Guía enviada al cliente']
   ];
   const tabsDiv = document.createElement('div'); tabsDiv.className='tabs';
@@ -1722,9 +1811,9 @@ function renderPedidos(){
   const pagosConfirmados=entregadosCuenta.filter(pagoDropiConfirmado);
   const pagosFueraDeEstado=STATE.pedidos.filter(p=>p.estado!=='Entregado' && pagoDropiConfirmado(p));
   const resumenPagos=document.createElement('div'); resumenPagos.className='kpi-grid'; resumenPagos.style.marginBottom='16px';
-  resumenPagos.innerHTML=`<div class="kpi"><div class="label">Entregados sin conciliar pago</div><div class="value">${entregadosCuenta.length-pagosConfirmados.length}</div></div>
-    <div class="kpi"><div class="label">Entregados marcados pagados</div><div class="value pos">${pagosConfirmados.length}</div></div>
-    <div class="kpi"><div class="label">Importe de depósitos asignado</div><div class="value">${money(pagosConfirmados.reduce((s,p)=>s+parseNum(p.montoPagadoDropi),0))}</div><div class="sub">Importe neto registrado por pedido, no venta bruta</div></div>
+  resumenPagos.innerHTML=`<div class="kpi"><div class="label">Entregados sin crédito conciliado</div><div class="value">${entregadosCuenta.length-pagosConfirmados.length}</div></div>
+    <div class="kpi"><div class="label">Entregados con crédito en billetera</div><div class="value pos">${pagosConfirmados.length}</div></div>
+    <div class="kpi"><div class="label">Ganancia acreditada en billetera</div><div class="value">${money(pagosConfirmados.reduce((s,p)=>s+parseNum(p.montoPagadoDropi),0))}</div><div class="sub">No es venta bruta ni depósito bancario</div></div>
     ${pagosFueraDeEstado.length?`<div class="kpi"><div class="label">Pagos a revisar</div><div class="value neg">${pagosFueraDeEstado.length}</div><div class="sub">Marcados pagados pero no entregados</div></div>`:''}`;
   main.appendChild(resumenPagos);
 
@@ -1766,10 +1855,7 @@ function renderPedidos(){
           ${prodOptions}
         </select>`;
       rows += `<tr>
-        <td>${referenciasCell(p)}</td>
-        <td>${p.fecha||'—'}${p.horaDropi?' '+p.horaDropi:''}</td>
-        <td>${p.fechaGuiaDropi||'—'}</td>
-        <td>${p.guia||'—'}</td>
+        ${referenciasCells(p)}
         <td><select class="dropi-status pill ${dropiStatusClass(p.estadoDropi||'PENDIENTE')}" data-dropi-status-row="${escapeHtml(p.id)}" aria-label="Estado Dropi del pedido ${escapeHtml(p.dropiId||'sin ID')}" title="Cambiar estado de Dropi">${dropiStatusOptions(p.estadoDropi||'PENDIENTE')}</select></td>
         <td>${pagoCell(p)}</td>
         <td>${p.transportadora||'—'}</td>
@@ -1805,7 +1891,7 @@ function renderPedidos(){
         const p=STATE.pedidos.find(x=>x.id===sel.dataset.dropiStatusRow);
         if(!p) return;
         if(e.target.value==='GUIA_GENERADA' && (!p.guia || !p.fechaGuiaDropi)){
-          alert('Primero registra el número y la fecha de guía en la columna ID Dropi.'); renderMain(); return;
+          alert('Primero registra el número y la fecha en las columnas de guía.'); renderMain(); return;
         }
         if(e.target.value==='PENDIENTE' && p.guia){
           alert('Este pedido ya tiene guía. Para volver a PENDIENTE, corrige primero las referencias.'); renderMain(); return;
@@ -1822,7 +1908,7 @@ function renderPedidos(){
       btn.onclick=async ()=>{
         const p=STATE.pedidos.find(x=>x.id===btn.dataset.saveRef);
         if(!p) return;
-        const form=btn.closest('[data-ref-row]');
+        const form=btn.closest('tr');
         const dropiId=form.querySelector('[data-ref-id]').value.trim();
         const fechaGuia=form.querySelector('[data-ref-fecha]').value;
         const guia=form.querySelector('[data-ref-guia]').value.trim();
@@ -1853,11 +1939,15 @@ function renderPedidos(){
         const fecha=form.querySelector('[data-pago-fecha]').value;
         const monto=form.querySelector('[data-pago-monto]').value;
         const referencia=form.querySelector('[data-pago-ref]').value.trim();
-        if(estado==='Pagado' && p.estado!=='Entregado'){
-          alert('Solo un pedido ENTREGADO puede marcarse como pagado por Dropi.'); return;
+        if(estado==='Pagado' && (p.estado!=='Entregado' || !p.dropiId || !p.guia)){
+          alert('Solo un pedido ENTREGADO con ID Dropi y guía puede tener crédito conciliado.'); return;
         }
-        if(estado==='Pagado' && (!fecha || parseNum(monto)<=0)){
-          alert('Para marcarlo pagado, registra la fecha y el importe asignado al pedido en la liquidación de Dropi.'); return;
+        if(estado==='Pagado' && (!fecha || !/^\d+$/.test(referencia) ||
+           Math.round(parseNum(monto)*100)!==Math.round(expectedDropiCredit(p)*100))){
+          alert('Registra fecha, ID de transacción y el importe exacto de la ganancia de este pedido.'); return;
+        }
+        if(estado==='Pagado' && STATE.pedidos.some(x=>x.id!==p.id && String(x.referenciaPagoDropi||'')===referencia)){
+          alert('Este ID de transacción ya está asignado a otro pedido.'); return;
         }
         const previo={estadoPagoDropi:p.estadoPagoDropi,fechaPagoDropi:p.fechaPagoDropi,montoPagadoDropi:p.montoPagadoDropi,referenciaPagoDropi:p.referenciaPagoDropi};
         p.estadoPagoDropi=estado;
